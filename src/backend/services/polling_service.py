@@ -20,6 +20,12 @@ def _plan_source_path(project: Project, plan: ProjectPlan) -> str:
     return "plan.json"
 
 
+def _task_output_path(project: Project, task_code: str, filename: str = "result.json") -> str:
+    base = project.collaboration_dir.rstrip("/") if project.collaboration_dir else ""
+    segment = f"outputs/{task_code}/{filename}"
+    return f"{base}/{segment}" if base else segment
+
+
 def poll_project(db: Session, project: Project) -> None:
     if not project.git_repo_url:
         return
@@ -61,7 +67,7 @@ def poll_project(db: Session, project: Project) -> None:
                 plan.updated_at = now
 
     for task in running_tasks:
-        result_path = f"outputs/{task.task_code}/result.json"
+        result_path = _task_output_path(project, task.task_code, "result.json")
         result_data = git_service.read_json(project.id, result_path)
 
         if result_data and result_data.get("task_code") == task.task_code:
@@ -78,6 +84,7 @@ def poll_project(db: Session, project: Project) -> None:
             elapsed_minutes = (now - task.dispatched_at.replace(tzinfo=timezone.utc)).total_seconds() / 60
             if elapsed_minutes > (task.timeout_minutes or 10):
                 task.status = "needs_attention"
+                task.last_error = f"Timeout: result not found at {result_path} after {elapsed_minutes:.1f} minutes"
                 task.updated_at = now
                 db.add(TaskEvent(
                     task_id=task.id,
@@ -86,7 +93,7 @@ def poll_project(db: Session, project: Project) -> None:
                 ))
 
         # Check usage.json
-        usage_path = f"outputs/{task.task_code}/usage.json"
+        usage_path = _task_output_path(project, task.task_code, "usage.json")
         if git_service.file_exists(project.id, usage_path):
             task.usage_file_path = usage_path
             if task.assignee_agent_id:
@@ -98,7 +105,7 @@ def poll_project(db: Session, project: Project) -> None:
     # Check if all tasks in executing project are completed
     if project.status == "executing":
         all_tasks = db.query(Task).filter(Task.project_id == project.id).all()
-        if all_tasks and all(t.status == "completed" for t in all_tasks):
+        if all_tasks and all(t.status in ("completed", "abandoned") for t in all_tasks):
             project.status = "completed"
             project.updated_at = now
     elif project.status == "planning":

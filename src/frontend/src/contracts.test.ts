@@ -90,8 +90,10 @@ describe('contracts helpers', () => {
       subscription_expires_at: null,
       short_term_reset_at: null,
       short_term_reset_interval_hours: null,
+      short_term_reset_needs_confirmation: false,
       long_term_reset_at: null,
       long_term_reset_interval_days: null,
+      long_term_reset_needs_confirmation: false,
     };
 
     expect(agent.capability).toContain('任务拆解');

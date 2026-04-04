@@ -24,6 +24,8 @@ class ContractFieldTests(unittest.TestCase):
         self.assertIn('long_term_reset_at', AgentResponse.model_fields)
         self.assertIn('short_term_reset_interval_hours', AgentResponse.model_fields)
         self.assertIn('long_term_reset_interval_days', AgentResponse.model_fields)
+        self.assertIn('short_term_reset_needs_confirmation', AgentResponse.model_fields)
+        self.assertIn('long_term_reset_needs_confirmation', AgentResponse.model_fields)
 
     def test_project_contracts_expose_collaboration_dir(self):
         self.assertIn('collaboration_dir', ProjectCreate.model_fields)

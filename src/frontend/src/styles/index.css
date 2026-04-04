@@ -234,6 +234,16 @@ body {
   background: #dc2626;
 }
 
+.btn-warning {
+  background: #fff1cc;
+  color: #8a5a00;
+  border: 1px solid #f3cf7a;
+}
+
+.btn-warning:hover:not(:disabled) {
+  background: #ffe4a3;
+}
+
 .btn-ghost {
   background: transparent;
   color: var(--color-text-secondary);
@@ -873,6 +883,54 @@ body {
   font-size: 14px;
 }
 
+.agents-table {
+  table-layout: fixed;
+}
+
+.agents-col-name {
+  width: 11%;
+}
+
+.agents-col-type {
+  width: 7%;
+}
+
+.agents-col-model {
+  width: 10%;
+}
+
+.agents-col-capability {
+  width: 23%;
+}
+
+.agents-col-status {
+  width: 8%;
+}
+
+.agents-col-subscription {
+  width: 10%;
+}
+
+.agents-col-short-reset {
+  width: 8%;
+}
+
+.agents-col-short-interval {
+  width: 5%;
+}
+
+.agents-col-long-reset {
+  width: 8%;
+}
+
+.agents-col-long-interval {
+  width: 5%;
+}
+
+.agents-col-actions {
+  width: 11%;
+}
+
 .data-table th {
   background: #f8fafc;
   padding: 10px 14px;
@@ -937,6 +995,37 @@ body {
 
 .agent-name-cell {
   font-weight: 600;
+  word-break: break-word;
+}
+
+.agent-type-cell,
+.agent-status-cell,
+.agent-interval-cell,
+.agent-operations-cell {
+  white-space: nowrap;
+}
+
+.agents-stacked-header {
+  text-align: center !important;
+  vertical-align: middle;
+  padding: 10px 6px !important;
+}
+
+.agents-stacked-header span {
+  display: block;
+  line-height: 1.15;
+}
+
+.agent-capability-cell {
+  min-width: 0;
+  word-break: break-word;
+  line-height: 1.5;
+}
+
+.agent-model-cell,
+.agent-subscription-cell,
+.agent-reset-cell {
+  word-break: break-word;
 }
 
 /* ===== Summary ===== */
@@ -1035,6 +1124,19 @@ body {
 .agent-actions-cell {
   display: flex;
   gap: 8px;
+}
+
+.reset-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.reset-action-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 .usage-limit-list {

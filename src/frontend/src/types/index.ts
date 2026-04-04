@@ -11,8 +11,10 @@ export interface Agent {
   subscription_expires_at: string | null;
   short_term_reset_at: string | null;
   short_term_reset_interval_hours: number | null;
+  short_term_reset_needs_confirmation: boolean;
   long_term_reset_at: string | null;
   long_term_reset_interval_days: number | null;
+  long_term_reset_needs_confirmation: boolean;
 }
 
 export interface Project {

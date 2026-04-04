@@ -21,7 +21,7 @@ export default function Layout() {
             项目
           </NavLink>
           <NavLink to="/agents" className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'}>
-            Agents
+            智能体
           </NavLink>
           <NavLink to="/change-log" className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'}>
             修改记录

@@ -18,7 +18,7 @@ export default function ProjectNewPage() {
   const navigate = useNavigate();
 
   const hasAgents = agents.length > 0;
-  const canSubmit = hasAgents && selectedAgentIds.length > 0 && name.trim() && goal.trim() && collaborationDir.trim() && !loading;
+  const canSubmit = hasAgents && selectedAgentIds.length > 0 && name.trim() && goal.trim() && !loading;
   const pageTitle = isEditMode ? '编辑项目' : '新建项目';
 
   useEffect(() => {
@@ -150,8 +150,7 @@ export default function ProjectNewPage() {
             type="text"
             value={collaborationDir}
             onChange={(e) => setCollaborationDir(e.target.value)}
-            required
-            placeholder="例如：tasks/shared"
+            placeholder="例如：tasks/shared（留空则使用仓库根目录）"
             title="请填写 Git 仓库中的相对目录路径，供多 Agent 协作时统一存放任务文件。"
           />
         </div>

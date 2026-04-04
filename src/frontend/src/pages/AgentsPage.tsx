@@ -57,12 +57,15 @@ const TIMEZONE_OPTIONS = [
   { value: 'PDT', label: 'PDT (UTC-7)', offsetMinutes: -7 * 60 },
 ];
 
+function pad2(value: number) {
+  return String(value).padStart(2, '0');
+}
+
 function formatForDateTimeLocal(value: string | null | undefined) {
   if (!value) return '';
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return '';
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}T${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
 }
 
 function parseDateTimeLocal(value: string) {
@@ -77,30 +80,88 @@ function parseDateTimeLocal(value: string) {
   };
 }
 
-function convertToBeijingIso(localValue: string, timezoneCode: string) {
+function parseStoredDateTime(value: string | null | undefined) {
+  if (!value) return null;
+  const match = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/.exec(value);
+  if (!match) return null;
+  return {
+    year: Number(match[1]),
+    month: Number(match[2]),
+    day: Number(match[3]),
+    hour: Number(match[4]),
+    minute: Number(match[5]),
+  };
+}
+
+function formatPartsForDateTimeLocal(parts: ReturnType<typeof parseDateTimeLocal>) {
+  if (!parts) return '';
+  return `${parts.year}-${pad2(parts.month)}-${pad2(parts.day)}T${pad2(parts.hour)}:${pad2(parts.minute)}`;
+}
+
+function formatPartsForDisplay(parts: ReturnType<typeof parseDateTimeLocal>) {
+  if (!parts) return <span className="text-muted">-</span>;
+  return `${parts.year}/${parts.month}/${parts.day} ${pad2(parts.hour)}:${pad2(parts.minute)}`;
+}
+
+function formatPartsForPreview(parts: ReturnType<typeof parseDateTimeLocal>) {
+  if (!parts) return '未设置';
+  return `${parts.year}/${parts.month}/${parts.day} ${pad2(parts.hour)}:${pad2(parts.minute)}`;
+}
+
+function convertToBeijingLocalValue(localValue: string, timezoneCode: string) {
   if (!localValue) return null;
   const parsed = parseDateTimeLocal(localValue);
   if (!parsed) return null;
   const timezone = TIMEZONE_OPTIONS.find((option) => option.value === timezoneCode) || TIMEZONE_OPTIONS[0];
-  const utcMillis = Date.UTC(parsed.year, parsed.month - 1, parsed.day, parsed.hour, parsed.minute) - timezone.offsetMinutes * 60 * 1000;
-  return new Date(utcMillis).toISOString();
+  const totalMinutes = (parsed.hour * 60 + parsed.minute) - timezone.offsetMinutes + (8 * 60);
+  const shiftedDate = new Date(Date.UTC(parsed.year, parsed.month - 1, parsed.day, 0, 0));
+  shiftedDate.setUTCMinutes(totalMinutes);
+  return [
+    shiftedDate.getUTCFullYear(),
+    pad2(shiftedDate.getUTCMonth() + 1),
+    pad2(shiftedDate.getUTCDate()),
+  ].join('-') + `T${pad2(shiftedDate.getUTCHours())}:${pad2(shiftedDate.getUTCMinutes())}`;
 }
 
 function formatBeijingPreview(localValue: string, timezoneCode: string) {
-  const isoValue = convertToBeijingIso(localValue, timezoneCode);
-  if (!isoValue) return '未设置';
-  return new Date(isoValue).toLocaleString('zh-CN', {
-    timeZone: 'Asia/Shanghai',
-    hour12: false,
-  });
+  return formatPartsForPreview(parseStoredDateTime(convertToBeijingLocalValue(localValue, timezoneCode)));
+}
+
+function formatBeijingStoredForInput(value: string | null | undefined) {
+  return formatPartsForDateTimeLocal(parseStoredDateTime(value));
 }
 
 function formatBeijingTime(value: string | null | undefined) {
-  if (!value) return <span className="text-muted">-</span>;
-  return new Date(value).toLocaleString('zh-CN', {
+  return formatPartsForDisplay(parseStoredDateTime(value));
+}
+
+function beijingPartsToEpoch(parts: ReturnType<typeof parseDateTimeLocal>) {
+  if (!parts) return Number.NaN;
+  return Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour - 8, parts.minute);
+}
+
+function getCurrentBeijingParts() {
+  const formatter = new Intl.DateTimeFormat('en-CA', {
     timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
     hour12: false,
   });
+  const values = Object.fromEntries(
+    formatter.formatToParts(new Date())
+      .filter((part) => part.type !== 'literal')
+      .map((part) => [part.type, Number(part.value)]),
+  );
+  return {
+    year: values.year,
+    month: values.month,
+    day: values.day,
+    hour: values.hour,
+    minute: values.minute,
+  };
 }
 
 export default function AgentsPage() {
@@ -111,7 +172,9 @@ export default function AgentsPage() {
   const [form, setForm] = useState<AgentForm>(emptyForm);
   const [saving, setSaving] = useState(false);
   const [deletingId, setDeletingId] = useState<number | null>(null);
+  const [actionAgentId, setActionAgentId] = useState<number | null>(null);
   const [error, setError] = useState('');
+  const [nowTick, setNowTick] = useState(() => Date.now());
 
   const effectiveAgentType = form.agent_type === '__custom__' ? form.custom_agent_type.trim() : form.agent_type;
   const modelOptions = useMemo(() => MODEL_OPTIONS[effectiveAgentType] || [], [effectiveAgentType]);
@@ -126,6 +189,19 @@ export default function AgentsPage() {
 
   useEffect(() => {
     fetchAgents();
+  }, [fetchAgents]);
+
+  useEffect(() => {
+    const countdownTimer = window.setInterval(() => {
+      setNowTick(Date.now());
+    }, 30 * 1000);
+    const refreshTimer = window.setInterval(() => {
+      fetchAgents();
+    }, 60 * 1000);
+    return () => {
+      window.clearInterval(countdownTimer);
+      window.clearInterval(refreshTimer);
+    };
   }, [fetchAgents]);
 
   function handleAdd() {
@@ -148,10 +224,10 @@ export default function AgentsPage() {
       machine_label: agent.machine_label || '',
       capability: agent.capability || '',
       subscription_expires_at: formatForDateTimeLocal(agent.subscription_expires_at),
-      short_term_reset_at: formatForDateTimeLocal(agent.short_term_reset_at),
+      short_term_reset_at: formatBeijingStoredForInput(agent.short_term_reset_at),
       short_term_reset_timezone: 'CST',
       short_term_reset_interval_hours: agent.short_term_reset_interval_hours != null ? String(agent.short_term_reset_interval_hours) : '',
-      long_term_reset_at: formatForDateTimeLocal(agent.long_term_reset_at),
+      long_term_reset_at: formatBeijingStoredForInput(agent.long_term_reset_at),
       long_term_reset_timezone: 'CST',
       long_term_reset_interval_days: agent.long_term_reset_interval_days != null ? String(agent.long_term_reset_interval_days) : '',
     });
@@ -183,12 +259,11 @@ export default function AgentsPage() {
         name: form.name.trim(),
         agent_type: resolvedAgentType,
         model_name: resolvedModelName || null,
-        machine_label: form.machine_label.trim() || null,
         capability: form.capability.trim() || null,
         subscription_expires_at: form.subscription_expires_at || null,
-        short_term_reset_at: convertToBeijingIso(form.short_term_reset_at, form.short_term_reset_timezone),
+        short_term_reset_at: convertToBeijingLocalValue(form.short_term_reset_at, form.short_term_reset_timezone),
         short_term_reset_interval_hours: form.short_term_reset_interval_hours.trim() ? Number(form.short_term_reset_interval_hours) : null,
-        long_term_reset_at: convertToBeijingIso(form.long_term_reset_at, form.long_term_reset_timezone),
+        long_term_reset_at: convertToBeijingLocalValue(form.long_term_reset_at, form.long_term_reset_timezone),
         long_term_reset_interval_days: form.long_term_reset_interval_days.trim() ? Number(form.long_term_reset_interval_days) : null,
       };
       if (editingId) {
@@ -220,14 +295,101 @@ export default function AgentsPage() {
     }
   }
 
-  if (loading) return <div className="page-loading">正在加载 Agents...</div>;
+  async function handleResetAction(agentId: number, mode: 'short' | 'long') {
+    setActionAgentId(agentId);
+    setError('');
+    try {
+      const updatedAgent = await api.post<Agent>(`/api/agents/${agentId}/${mode === 'short' ? 'short-term-reset' : 'long-term-reset'}/reset`);
+      setAgents((prev) => prev.map((agent) => agent.id === agentId ? updatedAgent : agent));
+    } catch (err) {
+      setError(`${mode === 'short' ? '短期' : '长期'}重置失败：${err}`);
+    } finally {
+      setActionAgentId(null);
+    }
+  }
+
+  async function handleConfirmAction(agentId: number, mode: 'short' | 'long') {
+    setActionAgentId(agentId);
+    setError('');
+    try {
+      const updatedAgent = await api.post<Agent>(`/api/agents/${agentId}/${mode === 'short' ? 'short-term-reset' : 'long-term-reset'}/confirm`);
+      setAgents((prev) => prev.map((agent) => agent.id === agentId ? updatedAgent : agent));
+    } catch (err) {
+      setError(`${mode === 'short' ? '短期' : '长期'}确认失败：${err}`);
+    } finally {
+      setActionAgentId(null);
+    }
+  }
+
+  // 根据订阅到期时间自动推导可用状态
+  function deriveAvailabilityStatus(agent: Agent): string {
+    if (agent.subscription_expires_at) {
+      const expiresDate = new Date(agent.subscription_expires_at);
+      if (!Number.isNaN(expiresDate.getTime()) && expiresDate.getTime() > Date.now()) {
+        return 'online';
+      }
+      return 'expired';
+    }
+    return agent.availability_status || 'unknown';
+  }
+
+  // 计算倒计时
+  function formatCountdown(resetTime: string | null | undefined) {
+    if (!resetTime) return { display: '-', tooltip: '', diffMs: Infinity };
+
+    const parts = parseStoredDateTime(resetTime);
+    const resetEpoch = beijingPartsToEpoch(parts);
+    const nowEpoch = beijingPartsToEpoch(getCurrentBeijingParts());
+    if (Number.isNaN(resetEpoch) || Number.isNaN(nowEpoch)) return { display: '-', tooltip: '', diffMs: Infinity };
+    const diffMs = resetEpoch - nowEpoch;
+    const tooltip = parts ? `${parts.year}/${parts.month}/${parts.day} ${pad2(parts.hour)}:${pad2(parts.minute)}` : '';
+
+    if (diffMs < 0) return { display: '已过期', tooltip, diffMs };
+
+    const diffMinutes = Math.floor(diffMs / (1000 * 60));
+    const days = Math.floor(diffMinutes / (24 * 60));
+    const hours = Math.floor((diffMinutes % (24 * 60)) / 60);
+    const minutes = diffMinutes % 60;
+
+    let display = '';
+    if (days > 0) {
+      display = `${days}d${hours}h${minutes}m`;
+    } else if (hours > 0) {
+      display = `${hours}h${minutes}m`;
+    } else {
+      display = `${minutes}m`;
+    }
+
+    return { display, tooltip, diffMs };
+  }
+
+  // 排序：按最近重置时间排序（最先重置的排最前面）
+  const sortedAgents = useMemo(() => {
+    return [...agents].sort((a, b) => {
+      const getMinResetMs = (agent: Agent) => {
+        const times: number[] = [];
+        if (agent.short_term_reset_at) {
+          const ms = beijingPartsToEpoch(parseStoredDateTime(agent.short_term_reset_at)) - beijingPartsToEpoch(getCurrentBeijingParts());
+          if (!Number.isNaN(ms)) times.push(ms);
+        }
+        if (agent.long_term_reset_at) {
+          const ms = beijingPartsToEpoch(parseStoredDateTime(agent.long_term_reset_at)) - beijingPartsToEpoch(getCurrentBeijingParts());
+          if (!Number.isNaN(ms)) times.push(ms);
+        }
+        return times.length > 0 ? Math.min(...times) : Infinity;
+      };
+      return getMinResetMs(a) - getMinResetMs(b);
+    });
+  }, [agents, nowTick]);
+
+  if (loading) return <div className="page-loading">正在加载智能体...</div>;
 
   return (
     <div className="page">
       <div className="page-header">
-        <h1>Agents</h1>
-        <button className="btn btn-primary" onClick={handleAdd} title="新增一个可用于项目执行的 Agent">
-          新增 Agent
+        <h1>智能体</h1>
+        <button className="btn btn-primary" onClick={handleAdd} title="新增一个可用于项目执行的智能体">
+          新增智能体
         </button>
       </div>
 
@@ -283,41 +445,29 @@ export default function AgentsPage() {
               </div>
             )}
 
-            <div className="form-row compact-form-row">
-              <div className="form-group">
-                <label title="可选，用于区分 Agent 运行在哪台设备上。">机器标识</label>
+            <div className="form-group">
+              <label title="根据 Agent Type 选择常见模型，没有时可改为手工输入。">Model Name</label>
+              {modelOptions.length > 0 ? (
+                <select
+                  value={form.model_name}
+                  onChange={(e) => updateField('model_name', e.target.value)}
+                  title="优先选择常见模型。"
+                >
+                  <option value="">未指定</option>
+                  {modelOptions.map((option) => (
+                    <option key={option} value={option}>{option}</option>
+                  ))}
+                  <option value="__custom__">手工输入</option>
+                </select>
+              ) : (
                 <input
                   type="text"
-                  value={form.machine_label}
-                  onChange={(e) => updateField('machine_label', e.target.value)}
-                  placeholder="例如：macbook-1"
-                  title="选填，用于排查和调度。"
+                  value={form.custom_model_name}
+                  onChange={(e) => updateField('custom_model_name', e.target.value)}
+                  placeholder="例如：gpt-5-codex"
+                  title="当前类型没有预设模型，请手工输入。"
                 />
-              </div>
-              <div className="form-group">
-                <label title="根据 Agent Type 选择常见模型，没有时可改为手工输入。">Model Name</label>
-                {modelOptions.length > 0 ? (
-                  <select
-                    value={form.model_name}
-                    onChange={(e) => updateField('model_name', e.target.value)}
-                    title="优先选择常见模型。"
-                  >
-                    <option value="">未指定</option>
-                    {modelOptions.map((option) => (
-                      <option key={option} value={option}>{option}</option>
-                    ))}
-                    <option value="__custom__">手工输入</option>
-                  </select>
-                ) : (
-                  <input
-                    type="text"
-                    value={form.custom_model_name}
-                    onChange={(e) => updateField('custom_model_name', e.target.value)}
-                    placeholder="例如：gpt-5-codex"
-                    title="当前类型没有预设模型，请手工输入。"
-                  />
-                )}
-              </div>
+              )}
             </div>
 
             {modelOptions.length > 0 && form.model_name === '__custom__' && (
@@ -440,7 +590,20 @@ export default function AgentsPage() {
         </div>
       )}
 
-      <table className="data-table">
+      <table className="data-table agents-table">
+        <colgroup>
+          <col className="agents-col-name" />
+          <col className="agents-col-type" />
+          <col className="agents-col-model" />
+          <col className="agents-col-capability" />
+          <col className="agents-col-status" />
+          <col className="agents-col-subscription" />
+          <col className="agents-col-short-reset" />
+          <col className="agents-col-short-interval" />
+          <col className="agents-col-long-reset" />
+          <col className="agents-col-long-interval" />
+          <col className="agents-col-actions" />
+        </colgroup>
         <thead>
           <tr>
             <th>名称</th>
@@ -449,43 +612,134 @@ export default function AgentsPage() {
             <th>能力</th>
             <th>状态</th>
             <th>订阅到期</th>
-            <th>短期重置</th>
+            <th className="agents-stacked-header">
+              <span>短期</span>
+              <span>重置</span>
+              <span>剩余</span>
+              <span>时间</span>
+            </th>
             <th>短期间隔</th>
-            <th>长期重置</th>
+            <th className="agents-stacked-header">
+              <span>长期</span>
+              <span>重置</span>
+              <span>剩余</span>
+              <span>时间</span>
+            </th>
             <th>长期间隔</th>
             <th>操作</th>
           </tr>
         </thead>
         <tbody>
-          {agents.map((agent) => (
-            <tr key={agent.id}>
-              <td className="agent-name-cell">{agent.name}</td>
-              <td>{agent.agent_type}</td>
-              <td>{agent.model_name || <span className="text-muted">-</span>}</td>
-              <td>{agent.capability || <span className="text-muted">-</span>}</td>
-              <td><StatusBadge status={agent.availability_status} /></td>
-              <td>
-                {formatBeijingTime(agent.subscription_expires_at)}
-              </td>
-              <td>{formatBeijingTime(agent.short_term_reset_at)}</td>
-              <td>{agent.short_term_reset_interval_hours != null ? `${agent.short_term_reset_interval_hours} 小时` : <span className="text-muted">-</span>}</td>
-              <td>{formatBeijingTime(agent.long_term_reset_at)}</td>
-              <td>{agent.long_term_reset_interval_days != null ? `${agent.long_term_reset_interval_days} 天` : <span className="text-muted">-</span>}</td>
-              <td>
-                <div className="agent-actions-cell">
-                  <button className="btn btn-sm btn-ghost" onClick={() => handleEdit(agent)} title="编辑当前 Agent 的配置信息">
-                    编辑
-                  </button>
-                  <button className="btn btn-sm btn-danger" onClick={() => handleDelete(agent)} disabled={deletingId === agent.id} title="删除当前 Agent">
-                    {deletingId === agent.id ? '删除中...' : '删除'}
-                  </button>
-                </div>
-              </td>
-            </tr>
-          ))}
+          {sortedAgents.map((agent) => {
+            const shortTermCountdown = formatCountdown(agent.short_term_reset_at);
+            const longTermCountdown = formatCountdown(agent.long_term_reset_at);
+            const derivedStatus = deriveAvailabilityStatus(agent);
+            const showShortResetActions = Boolean(
+              agent.short_term_reset_at
+              && agent.short_term_reset_interval_hours
+              && agent.short_term_reset_needs_confirmation,
+            );
+            const showLongResetActions = Boolean(
+              agent.long_term_reset_at
+              && agent.long_term_reset_interval_days
+              && agent.long_term_reset_needs_confirmation,
+            );
+
+            // 短期重置：不足1小时为红色
+            const shortTermColor = shortTermCountdown.diffMs >= 0 && shortTermCountdown.diffMs < 60 * 60 * 1000 && shortTermCountdown.display !== '-'
+              ? '#ef4444' : undefined;
+            // 长期重置：不足1天为红色，不足2天为橙黄色
+            let longTermColor: string | undefined;
+            if (longTermCountdown.display !== '-' && longTermCountdown.diffMs >= 0) {
+              if (longTermCountdown.diffMs < 24 * 60 * 60 * 1000) {
+                longTermColor = '#ef4444';
+              } else if (longTermCountdown.diffMs < 2 * 24 * 60 * 60 * 1000) {
+                longTermColor = '#e89a1d';
+              }
+            }
+
+            return (
+              <tr key={agent.id}>
+                <td className="agent-name-cell">{agent.name}</td>
+                <td className="agent-type-cell">{agent.agent_type}</td>
+                <td className="agent-model-cell">{agent.model_name || <span className="text-muted">-</span>}</td>
+                <td className="agent-capability-cell">{agent.capability || <span className="text-muted">-</span>}</td>
+                <td className="agent-status-cell"><StatusBadge status={derivedStatus} /></td>
+                <td className="agent-subscription-cell">
+                  {formatBeijingTime(agent.subscription_expires_at)}
+                </td>
+                <td className="agent-reset-cell">
+                  <div className="reset-cell">
+                    <div title={shortTermCountdown.tooltip} style={shortTermColor ? { color: shortTermColor, fontWeight: 600 } : undefined}>
+                      {shortTermCountdown.display === '-' ? <span className="text-muted">-</span> : shortTermCountdown.display}
+                    </div>
+                    {showShortResetActions && (
+                      <div className="reset-action-row">
+                        <button
+                          className="btn btn-sm btn-warning"
+                          title="点击重置短期剩余时间"
+                          onClick={() => handleResetAction(agent.id, 'short')}
+                          disabled={actionAgentId === agent.id}
+                        >
+                          重置
+                        </button>
+                        <button
+                          className="btn btn-sm btn-primary"
+                          title="下次短期重置时间无误"
+                          onClick={() => handleConfirmAction(agent.id, 'short')}
+                          disabled={actionAgentId === agent.id}
+                        >
+                          确认
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </td>
+                <td className="agent-interval-cell">{agent.short_term_reset_interval_hours != null ? `${agent.short_term_reset_interval_hours} 小时` : <span className="text-muted">-</span>}</td>
+                <td className="agent-reset-cell">
+                  <div className="reset-cell">
+                    <div title={longTermCountdown.tooltip} style={longTermColor ? { color: longTermColor, fontWeight: 600 } : undefined}>
+                      {longTermCountdown.display === '-' ? <span className="text-muted">-</span> : longTermCountdown.display}
+                    </div>
+                    {showLongResetActions && (
+                      <div className="reset-action-row">
+                        <button
+                          className="btn btn-sm btn-warning"
+                          title="点击重置长期剩余时间"
+                          onClick={() => handleResetAction(agent.id, 'long')}
+                          disabled={actionAgentId === agent.id}
+                        >
+                          重置
+                        </button>
+                        <button
+                          className="btn btn-sm btn-primary"
+                          title="下次长期重置时间无误"
+                          onClick={() => handleConfirmAction(agent.id, 'long')}
+                          disabled={actionAgentId === agent.id}
+                        >
+                          确认
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </td>
+                <td className="agent-interval-cell">{agent.long_term_reset_interval_days != null ? `${agent.long_term_reset_interval_days} 天` : <span className="text-muted">-</span>}</td>
+                <td className="agent-operations-cell">
+                  <div className="agent-actions-cell">
+                    <button className="btn btn-sm btn-ghost" onClick={() => handleEdit(agent)} title="编辑当前智能体的配置信息">
+                      编辑
+                    </button>
+                    <button className="btn btn-sm btn-danger" onClick={() => handleDelete(agent)} disabled={deletingId === agent.id} title="删除当前智能体">
+                      {deletingId === agent.id ? '删除中...' : '删除'}
+                    </button>
+                  </div>
+                </td>
+              </tr>
+            );
+          })}
           {agents.length === 0 && (
             <tr>
-              <td colSpan={11} className="empty-row">当前还没有配置 Agent。</td>
+              <td colSpan={11} className="empty-row">当前还没有配置智能体。</td>
             </tr>
           )}
         </tbody>

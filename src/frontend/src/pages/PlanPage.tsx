@@ -126,7 +126,7 @@ export default function PlanPage() {
       } catch {
         // Keep polling silent while the loop is active.
       }
-    }, 15000);
+    }, 30000);
 
     return () => window.clearInterval(timer);
   }, [currentPlanId, id, latestPlan]);

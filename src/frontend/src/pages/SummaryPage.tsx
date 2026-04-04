@@ -33,7 +33,7 @@ interface ProjectSummaryResponse {
 const EVENT_LABELS: Record<string, string> = {
   human_intervention: '人工干预',
   manual_complete: '人工完成',
-  redispatch: '重新派发',
+  redispatched: '重新派发',
   abandoned: '已放弃',
 };
 
@@ -80,7 +80,7 @@ export default function SummaryPage() {
     (e) =>
       e.event_type === 'human_intervention' ||
       e.event_type === 'manual_complete' ||
-      e.event_type === 'redispatch' ||
+      e.event_type === 'redispatched' ||
       e.event_type === 'abandoned'
   );
 

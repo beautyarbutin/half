@@ -22,6 +22,62 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("half")
 
 
+def migrate_task_code_unique_constraint():
+    """Migrate task_code from global unique to (project_id, task_code) composite unique."""
+    with engine.begin() as conn:
+        ensure_app_meta(conn)
+        migrated = conn.execute(
+            text("SELECT value FROM app_meta WHERE key = 'task_code_composite_unique_v1'")
+        ).scalar()
+        if migrated:
+            return
+
+        # Check if old global unique index exists on task_code
+        indexes = conn.execute(text("PRAGMA index_list('tasks')")).fetchall()
+        has_old_unique = False
+        for idx in indexes:
+            idx_name = idx[1]
+            cols = conn.execute(text(f"PRAGMA index_info('{idx_name}')")).fetchall()
+            col_names = [c[2] for c in cols]
+            if col_names == ["task_code"] and idx[2]:  # unique index on task_code alone
+                has_old_unique = True
+                break
+
+        if has_old_unique:
+            # SQLite cannot drop constraints directly; recreate the table
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS tasks_new (
+                    id INTEGER PRIMARY KEY,
+                    project_id INTEGER NOT NULL REFERENCES projects(id),
+                    plan_id INTEGER NOT NULL REFERENCES project_plans(id),
+                    task_code TEXT NOT NULL,
+                    task_name TEXT NOT NULL,
+                    description TEXT,
+                    assignee_agent_id INTEGER REFERENCES agents(id),
+                    status TEXT DEFAULT 'pending',
+                    depends_on_json TEXT DEFAULT '[]',
+                    expected_output_path TEXT,
+                    result_file_path TEXT,
+                    usage_file_path TEXT,
+                    last_error TEXT,
+                    timeout_minutes INTEGER DEFAULT 10,
+                    dispatched_at DATETIME,
+                    completed_at DATETIME,
+                    created_at DATETIME,
+                    updated_at DATETIME,
+                    UNIQUE(project_id, task_code)
+                )
+            """))
+            conn.execute(text("INSERT INTO tasks_new SELECT * FROM tasks"))
+            conn.execute(text("DROP TABLE tasks"))
+            conn.execute(text("ALTER TABLE tasks_new RENAME TO tasks"))
+            logger.info("Migrated tasks table: task_code unique constraint changed to (project_id, task_code)")
+
+        conn.execute(
+            text("INSERT INTO app_meta(key, value) VALUES ('task_code_composite_unique_v1', 'done')")
+        )
+
+
 def ensure_schema_updates():
     inspector = inspect(engine)
     required_columns = {
@@ -29,8 +85,10 @@ def ensure_schema_updates():
             "capability": "TEXT",
             "short_term_reset_at": "DATETIME",
             "short_term_reset_interval_hours": "INTEGER",
+            "short_term_reset_needs_confirmation": "BOOLEAN DEFAULT 0",
             "long_term_reset_at": "DATETIME",
             "long_term_reset_interval_days": "INTEGER",
+            "long_term_reset_needs_confirmation": "BOOLEAN DEFAULT 0",
         },
         "projects": {
             "collaboration_dir": "TEXT",
@@ -56,9 +114,49 @@ def ensure_schema_updates():
                     logger.info("Added missing column %s.%s", table_name, column_name)
 
 
+def ensure_app_meta(conn):
+    conn.execute(text("CREATE TABLE IF NOT EXISTS app_meta (key TEXT PRIMARY KEY, value TEXT)"))
+
+
+def repair_legacy_agent_reset_times():
+    with engine.begin() as conn:
+        ensure_app_meta(conn)
+        migrated = conn.execute(
+            text("SELECT value FROM app_meta WHERE key = 'agent_reset_times_beijing_v1'")
+        ).scalar()
+        if migrated:
+            return
+        updated = conn.execute(
+            text(
+                """
+                UPDATE agents
+                SET short_term_reset_at = CASE
+                        WHEN short_term_reset_at IS NOT NULL THEN datetime(short_term_reset_at, '+8 hours')
+                        ELSE NULL
+                    END,
+                    long_term_reset_at = CASE
+                        WHEN long_term_reset_at IS NOT NULL THEN datetime(long_term_reset_at, '+8 hours')
+                        ELSE NULL
+                    END,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE short_term_reset_at IS NOT NULL OR long_term_reset_at IS NOT NULL
+                """
+            )
+        )
+        conn.execute(
+            text(
+                "INSERT INTO app_meta(key, value) VALUES ('agent_reset_times_beijing_v1', 'done')"
+            )
+        )
+        if updated.rowcount:
+            logger.info("Adjusted legacy agent reset times to Beijing-local storage for %s rows", updated.rowcount)
+
+
 def init_db():
     Base.metadata.create_all(bind=engine)
     ensure_schema_updates()
+    migrate_task_code_unique_constraint()
+    repair_legacy_agent_reset_times()
     db = SessionLocal()
     try:
         admin = db.query(User).filter(User.username == "admin").first()

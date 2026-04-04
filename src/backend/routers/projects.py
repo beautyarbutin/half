@@ -17,7 +17,7 @@ class ProjectCreate(BaseModel):
     name: str
     goal: Optional[str] = None
     git_repo_url: Optional[str] = None
-    collaboration_dir: str
+    collaboration_dir: Optional[str] = None
     agent_ids: list[int] = []
 
 
@@ -119,7 +119,7 @@ def compute_next_step(db: Session, project: Project) -> tuple[str, dict]:
         if tasks and all(t.status in ('completed', 'abandoned') for t in tasks):
             return 'View execution summary', summary
 
-        completed_codes = {t.task_code for t in tasks if t.status == 'completed'}
+        completed_codes = {t.task_code for t in tasks if t.status in ('completed', 'abandoned')}
         for t in tasks:
             if t.status == 'pending':
                 deps = json.loads(t.depends_on_json) if t.depends_on_json else []
@@ -175,6 +175,8 @@ def update_project(project_id: int, body: ProjectUpdate, db: Session = Depends(g
     if not project:
         raise HTTPException(status_code=404, detail='Project not found')
     update_data = body.model_dump(exclude_unset=True)
+    if not update_data:
+        raise HTTPException(status_code=400, detail="No fields to update")
     if 'agent_ids' in update_data:
         update_data['agent_ids_json'] = json.dumps(_validate_agent_ids(db, update_data.pop('agent_ids')))
     for key, value in update_data.items():

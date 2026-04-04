@@ -249,7 +249,7 @@ def redispatch_task(task_id: int, db: Session = Depends(get_db), _user: User = D
     task = db.query(Task).filter(Task.id == task_id).first()
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
-    if task.status not in ("needs_attention", "abandoned", "running"):
+    if task.status not in ("needs_attention", "running"):
         raise HTTPException(status_code=400, detail=f"Cannot redispatch task in status: {task.status}")
 
     now = datetime.now(timezone.utc)

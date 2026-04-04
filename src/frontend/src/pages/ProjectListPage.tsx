@@ -64,6 +64,7 @@ export default function ProjectListPage() {
               </div>
               <p className="project-card-goal" onClick={() => navigate(`/projects/${project.id}`)}>{project.goal}</p>
               <div className="project-card-footer">
+                <span>{project.agent_ids?.length || 0} 个 Agent</span>
                 <span className="created-at">{new Date(project.created_at).toLocaleDateString('zh-CN')}</span>
               </div>
               <div className="project-card-actions">

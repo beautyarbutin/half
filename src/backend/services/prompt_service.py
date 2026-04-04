@@ -16,7 +16,7 @@ def generate_plan_prompt(
         for agent in selected_agents
     ) or "- 未指定参与 Agent"
 
-    return f"""你是项目 [{project.name}] 的执行 Agent。
+    prompt = f"""你是项目 [{project.name}] 的执行 Agent。
 
 ## 任务目标
 {project.goal}

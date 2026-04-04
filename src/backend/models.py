@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 
 from sqlalchemy import (
-    Column, Integer, Text, Boolean, DateTime, ForeignKey,
+    Column, Integer, Text, Boolean, DateTime, ForeignKey, UniqueConstraint,
 )
 from database import Base
 
@@ -35,8 +35,10 @@ class Agent(Base):
     subscription_expires_at = Column(DateTime, nullable=True)
     short_term_reset_at = Column(DateTime, nullable=True)
     short_term_reset_interval_hours = Column(Integer, nullable=True)
+    short_term_reset_needs_confirmation = Column(Boolean, default=False)
     long_term_reset_at = Column(DateTime, nullable=True)
     long_term_reset_interval_days = Column(Integer, nullable=True)
+    long_term_reset_needs_confirmation = Column(Boolean, default=False)
     last_usage_update_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=utcnow)
     updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
@@ -66,7 +68,7 @@ class ProjectPlan(Base):
     plan_type = Column(Text, default="candidate")  # candidate/final
     plan_json = Column(Text)
     prompt_text = Column(Text)
-    status = Column(Text, default="completed")  # pending/running/completed/needs_attention/final
+    status = Column(Text, default="pending")  # pending/running/completed/needs_attention/final
     source_path = Column(Text)
     include_usage = Column(Boolean, default=False)
     selected_agent_ids_json = Column(Text, default="[]")
@@ -80,11 +82,14 @@ class ProjectPlan(Base):
 
 class Task(Base):
     __tablename__ = "tasks"
+    __table_args__ = (
+        UniqueConstraint("project_id", "task_code", name="uq_task_project_code"),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     project_id = Column(Integer, ForeignKey("projects.id"), nullable=False)
     plan_id = Column(Integer, ForeignKey("project_plans.id"), nullable=False)
-    task_code = Column(Text, unique=True, nullable=False)
+    task_code = Column(Text, nullable=False)
     task_name = Column(Text, nullable=False)
     description = Column(Text)
     assignee_agent_id = Column(Integer, ForeignKey("agents.id"), nullable=True)
@@ -106,6 +111,6 @@ class TaskEvent(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     task_id = Column(Integer, ForeignKey("tasks.id"), nullable=False)
-    event_type = Column(Text, nullable=False)  # dispatched/completed/timeout/manual_complete/abandoned/redispatched/error
+    event_type = Column(Text, nullable=False)  # dispatched/completed/timeout/manual_complete/abandoned/redispatched/updated/error
     detail = Column(Text)
     created_at = Column(DateTime, default=utcnow)
