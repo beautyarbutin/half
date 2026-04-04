@@ -1,0 +1,338 @@
+import json
+from datetime import datetime, timezone
+from typing import Optional
+
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
+from sqlalchemy.orm import Session
+
+from database import get_db
+from models import Agent, Project, ProjectPlan, Task, User
+from auth import get_current_user
+from services.prompt_service import generate_plan_prompt
+
+router = APIRouter(prefix="/api/projects", tags=["plans"])
+
+
+class PlanPromptRequest(BaseModel):
+    include_usage: bool = False
+    selected_agent_ids: list[int] = []
+
+
+class PlanImport(BaseModel):
+    plan_json: str
+    source_agent_id: Optional[int] = None
+    plan_type: str = "candidate"
+
+
+class PlanResponse(BaseModel):
+    id: int
+    project_id: int
+    source_agent_id: Optional[int]
+    plan_type: str
+    plan_json: Optional[str]
+    prompt_text: Optional[str]
+    status: str
+    source_path: Optional[str]
+    include_usage: bool
+    selected_agent_ids: list[int]
+    dispatched_at: Optional[datetime]
+    detected_at: Optional[datetime]
+    last_error: Optional[str]
+    is_selected: bool
+    created_at: Optional[datetime]
+    updated_at: Optional[datetime]
+
+    class Config:
+        from_attributes = True
+
+
+class PromptResponse(BaseModel):
+    prompt: str
+    plan_id: int
+    source_path: str
+
+
+def _parse_selected_agent_ids(value: Optional[str]) -> list[int]:
+    if not value:
+        return []
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(parsed, list):
+        return []
+    return [int(item) for item in parsed if isinstance(item, int)]
+
+
+def _build_plan_response(plan: ProjectPlan) -> PlanResponse:
+    return PlanResponse(
+        id=plan.id,
+        project_id=plan.project_id,
+        source_agent_id=plan.source_agent_id,
+        plan_type=plan.plan_type,
+        plan_json=plan.plan_json,
+        prompt_text=plan.prompt_text,
+        status=plan.status,
+        source_path=plan.source_path,
+        include_usage=plan.include_usage,
+        selected_agent_ids=_parse_selected_agent_ids(plan.selected_agent_ids_json),
+        dispatched_at=plan.dispatched_at,
+        detected_at=plan.detected_at,
+        last_error=plan.last_error,
+        is_selected=plan.is_selected,
+        created_at=plan.created_at,
+        updated_at=plan.updated_at,
+    )
+
+
+def _plan_file_path(project: Project, plan_id: int) -> str:
+    base_dir = project.collaboration_dir.rstrip("/") if project.collaboration_dir else ""
+    filename = f"plan-{plan_id}.json"
+    return f"{base_dir}/{filename}" if base_dir else filename
+
+
+def _plan_usage_path(project: Project, plan_id: int) -> str:
+    base_dir = project.collaboration_dir.rstrip("/") if project.collaboration_dir else ""
+    filename = f"plan-{plan_id}-usage.json"
+    return f"{base_dir}/{filename}" if base_dir else filename
+
+
+class FinalizeRequest(BaseModel):
+    plan_id: int
+
+
+@router.post("/{project_id}/plans/generate-prompt", response_model=PromptResponse)
+def plan_generate_prompt(
+    project_id: int,
+    body: PlanPromptRequest = PlanPromptRequest(),
+    db: Session = Depends(get_db),
+    _user: User = Depends(get_current_user),
+):
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    selected_agents = db.query(Agent).filter(Agent.id.in_(body.selected_agent_ids)).all() if body.selected_agent_ids else []
+    if len(selected_agents) != len(body.selected_agent_ids):
+        raise HTTPException(status_code=400, detail="Some selected agents do not exist")
+    if not selected_agents:
+        raise HTTPException(status_code=400, detail="At least one participating agent must be selected")
+
+    now = datetime.now(timezone.utc)
+    plan = ProjectPlan(
+        project_id=project_id,
+        source_agent_id=None,
+        plan_type="candidate",
+        prompt_text="",
+        status="pending",
+        source_path="",
+        include_usage=body.include_usage,
+        selected_agent_ids_json=json.dumps(body.selected_agent_ids),
+        is_selected=False,
+    )
+    db.add(plan)
+    db.flush()
+
+    source_path = _plan_file_path(project, plan.id)
+    usage_path = _plan_usage_path(project, plan.id) if body.include_usage else None
+    prompt = generate_plan_prompt(project, selected_agents, source_path, usage_path)
+    plan.prompt_text = prompt
+    plan.source_path = source_path
+
+    # Update project status to planning
+    if project.status == "draft":
+        project.status = "planning"
+    project.updated_at = now
+    db.commit()
+    db.refresh(plan)
+    return PromptResponse(prompt=prompt, plan_id=plan.id, source_path=source_path)
+
+
+@router.post("/{project_id}/plans/{plan_id}/dispatch", response_model=PlanResponse)
+def dispatch_plan(
+    project_id: int,
+    plan_id: int,
+    db: Session = Depends(get_db),
+    _user: User = Depends(get_current_user),
+):
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    plan = db.query(ProjectPlan).filter(
+        ProjectPlan.id == plan_id,
+        ProjectPlan.project_id == project_id,
+    ).first()
+    if not plan:
+        raise HTTPException(status_code=404, detail="Plan not found")
+    if not plan.prompt_text:
+        raise HTTPException(status_code=400, detail="Plan has no generated prompt")
+
+    now = datetime.now(timezone.utc)
+
+    if plan.status == "running":
+        return _build_plan_response(plan)
+
+    if plan.status in ("completed", "final"):
+        plan = ProjectPlan(
+            project_id=project_id,
+            source_agent_id=plan.source_agent_id,
+            plan_type="candidate",
+            prompt_text=plan.prompt_text,
+            status="running",
+            source_path="",
+            include_usage=plan.include_usage,
+            selected_agent_ids_json=plan.selected_agent_ids_json,
+            dispatched_at=now,
+            is_selected=False,
+        )
+        db.add(plan)
+        db.flush()
+        selected_agents = db.query(Agent).filter(Agent.id.in_(_parse_selected_agent_ids(plan.selected_agent_ids_json))).all()
+        plan.source_path = _plan_file_path(project, plan.id)
+        plan.prompt_text = generate_plan_prompt(
+            project,
+            selected_agents,
+            plan.source_path,
+            _plan_usage_path(project, plan.id) if plan.include_usage else None,
+        )
+    else:
+        plan.status = "running"
+        plan.dispatched_at = now
+        plan.detected_at = None
+        plan.last_error = None
+        plan.updated_at = now
+
+    if project.status == "draft":
+        project.status = "planning"
+    project.updated_at = now
+    db.commit()
+    db.refresh(plan)
+    return _build_plan_response(plan)
+
+
+@router.get("/{project_id}/plans", response_model=list[PlanResponse])
+def list_plans(project_id: int, db: Session = Depends(get_db), _user: User = Depends(get_current_user)):
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    plans = db.query(ProjectPlan).filter(ProjectPlan.project_id == project_id).order_by(ProjectPlan.created_at.asc()).all()
+    return [_build_plan_response(plan) for plan in plans]
+
+
+@router.post("/{project_id}/plans/import", response_model=PlanResponse, status_code=201)
+def import_plan(project_id: int, body: PlanImport, db: Session = Depends(get_db), _user: User = Depends(get_current_user)):
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    # Validate JSON
+    try:
+        json.loads(body.plan_json)
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="Invalid JSON in plan_json")
+
+    now = datetime.now(timezone.utc)
+    plan = ProjectPlan(
+        project_id=project_id,
+        source_agent_id=body.source_agent_id,
+        plan_type=body.plan_type,
+        plan_json=body.plan_json,
+        status="completed",
+        source_path=f"{project.collaboration_dir.rstrip('/')}/plan.json" if project.collaboration_dir else "plan.json",
+        selected_agent_ids_json="[]",
+        detected_at=now,
+        is_selected=False,
+    )
+    db.add(plan)
+    if project.status == "draft":
+        project.status = "planning"
+    project.updated_at = now
+    db.commit()
+    db.refresh(plan)
+    return _build_plan_response(plan)
+
+
+@router.post("/{project_id}/plans/finalize")
+def finalize_plan(project_id: int, body: FinalizeRequest, db: Session = Depends(get_db), _user: User = Depends(get_current_user)):
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    plan = db.query(ProjectPlan).filter(
+        ProjectPlan.id == body.plan_id,
+        ProjectPlan.project_id == project_id,
+    ).first()
+    if not plan:
+        raise HTTPException(status_code=404, detail="Plan not found")
+
+    # Prevent double finalization
+    if plan.plan_type == "final" and plan.is_selected:
+        raise HTTPException(status_code=400, detail="Plan already finalized")
+    if plan.status != "completed" or not plan.plan_json:
+        raise HTTPException(status_code=400, detail="Plan is not ready to finalize")
+
+    # Check if project already has tasks (another plan was finalized)
+    existing_tasks = db.query(Task).filter(Task.project_id == project_id).count()
+    if existing_tasks > 0:
+        raise HTTPException(status_code=400, detail="Project already has tasks from a finalized plan")
+
+    # Parse plan JSON
+    try:
+        plan_data = json.loads(plan.plan_json)
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="Invalid plan JSON")
+
+    tasks_data = plan_data.get("tasks", [])
+    if not tasks_data:
+        raise HTTPException(status_code=400, detail="Plan contains no tasks")
+
+    # Mark plan as selected/final
+    plan.is_selected = True
+    plan.plan_type = "final"
+    plan.status = "final"
+    plan.updated_at = datetime.now(timezone.utc)
+
+    # Create task records
+    created_tasks = []
+    for t in tasks_data:
+        task_code = t.get("task_code")
+        if not task_code:
+            raise HTTPException(status_code=400, detail="Each task must have a task_code")
+
+        # Resolve assignee
+        assignee_agent_id = None
+        assignee = t.get("assignee")
+        if assignee:
+            from models import Agent
+            agent = db.query(Agent).filter(Agent.slug == assignee).first()
+            if agent:
+                assignee_agent_id = agent.id
+
+        depends_on = t.get("depends_on", [])
+        expected_output = t.get("expected_output", f"outputs/{task_code}/result.json")
+
+        task = Task(
+            project_id=project_id,
+            plan_id=plan.id,
+            task_code=task_code,
+            task_name=t.get("task_name", task_code),
+            description=t.get("description", ""),
+            assignee_agent_id=assignee_agent_id,
+            status="pending",
+            depends_on_json=json.dumps(depends_on),
+            expected_output_path=expected_output,
+        )
+        db.add(task)
+        created_tasks.append(task)
+
+    # Update project status
+    project.status = "executing"
+    project.updated_at = datetime.now(timezone.utc)
+
+    db.commit()
+
+    return {
+        "message": "Plan finalized",
+        "tasks_created": len(created_tasks),
+        "project_status": project.status,
+    }

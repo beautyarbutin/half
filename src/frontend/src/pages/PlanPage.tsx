@@ -1,0 +1,404 @@
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useNavigate, useParams } from 'react-router-dom';
+import { api } from '../api/client';
+import { copyText, getPlanIdToFinalize } from '../contracts';
+import { Agent, Plan, Project } from '../types';
+
+function formatDuration(seconds: number): string {
+  const safeSeconds = Math.max(0, seconds);
+  const hours = Math.floor(safeSeconds / 3600);
+  const minutes = Math.floor((safeSeconds % 3600) / 60);
+  const remainingSeconds = safeSeconds % 60;
+  return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(remainingSeconds).padStart(2, '0')}`;
+}
+
+function getStatusMeta(plan: Plan | null) {
+  if (!plan || plan.status === 'pending') {
+    return { color: 'yellow', text: '未启动' };
+  }
+  if (plan.status === 'running') {
+    return { color: 'red', text: '轮询中' };
+  }
+  if (plan.status === 'completed' || plan.status === 'final') {
+    return { color: 'green', text: '已查询到规划结果' };
+  }
+  return { color: 'yellow', text: '已结束，未查询到结果' };
+}
+
+export default function PlanPage() {
+  const { id } = useParams<{ id: string }>();
+  const navigate = useNavigate();
+  const [project, setProject] = useState<Project | null>(null);
+  const [agents, setAgents] = useState<Agent[]>([]);
+  const [plans, setPlans] = useState<Plan[]>([]);
+  const [planningBrief, setPlanningBrief] = useState('');
+  const [selectedAgentIds, setSelectedAgentIds] = useState<number[]>([]);
+  const [includeUsage, setIncludeUsage] = useState(false);
+  const [promptText, setPromptText] = useState('');
+  const [currentPlanId, setCurrentPlanId] = useState<number | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [actionLoading, setActionLoading] = useState('');
+  const [error, setError] = useState('');
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const [timerPlanId, setTimerPlanId] = useState<number | null>(null);
+  const [isAutoFinalizing, setIsAutoFinalizing] = useState(false);
+  const timerStartedAtRef = useRef<number | null>(null);
+  const autoFinalizeTriggeredRef = useRef<number | null>(null);
+
+  const fetchPageData = useCallback(async () => {
+    try {
+      const [projectData, agentList, planList] = await Promise.all([
+        api.get<Project>(`/api/projects/${id}`),
+        api.get<Agent[]>('/api/agents'),
+        api.get<Plan[]>(`/api/projects/${id}/plans`),
+      ]);
+      setProject(projectData);
+      setAgents(agentList);
+      setPlans(planList);
+      setPlanningBrief((current) => current || projectData.goal || '');
+
+      const latestPlan = [...planList].reverse()[0] || null;
+      if (latestPlan) {
+        setPromptText(latestPlan.prompt_text || '');
+        setCurrentPlanId(latestPlan.id);
+        setIncludeUsage(Boolean(latestPlan.include_usage));
+        setSelectedAgentIds(latestPlan.selected_agent_ids?.length ? latestPlan.selected_agent_ids : (projectData.agent_ids || []));
+      } else {
+        setPromptText('');
+        setCurrentPlanId(null);
+        setSelectedAgentIds(projectData.agent_ids || []);
+      }
+    } catch (err) {
+      setError(`加载 Plan 页面失败：${err}`);
+    } finally {
+      setLoading(false);
+    }
+  }, [id]);
+
+  useEffect(() => {
+    fetchPageData();
+  }, [fetchPageData]);
+
+  const projectAgents = useMemo(() => {
+    if (!project?.agent_ids?.length) return agents;
+    return agents.filter((agent) => project.agent_ids?.includes(agent.id));
+  }, [agents, project]);
+
+  const latestPlan = useMemo(() => [...plans].reverse()[0] || null, [plans]);
+  const statusMeta = getStatusMeta(latestPlan);
+
+  useEffect(() => {
+    if (latestPlan?.status !== 'running' || timerPlanId !== latestPlan.id || timerStartedAtRef.current === null) {
+      setElapsedSeconds(0);
+      return undefined;
+    }
+
+    const updateElapsed = () => {
+      setElapsedSeconds(Math.floor((Date.now() - timerStartedAtRef.current!) / 1000));
+    };
+
+    updateElapsed();
+    const timer = window.setInterval(updateElapsed, 1000);
+    return () => window.clearInterval(timer);
+  }, [latestPlan?.id, latestPlan?.status, timerPlanId]);
+
+  useEffect(() => {
+    if (!latestPlan || latestPlan.status === 'running') {
+      return;
+    }
+    setTimerPlanId(null);
+    timerStartedAtRef.current = null;
+    setElapsedSeconds(0);
+  }, [latestPlan]);
+
+  useEffect(() => {
+    if (!latestPlan || latestPlan.status !== 'running') return undefined;
+
+    const timer = window.setInterval(async () => {
+      try {
+        await api.post(`/api/projects/${id}/poll`);
+        const planList = await api.get<Plan[]>(`/api/projects/${id}/plans`);
+        setPlans(planList);
+        const nextLatestPlan = [...planList].reverse()[0] || null;
+        if (nextLatestPlan?.id !== currentPlanId) {
+          setCurrentPlanId(nextLatestPlan?.id || null);
+        }
+      } catch {
+        // Keep polling silent while the loop is active.
+      }
+    }, 15000);
+
+    return () => window.clearInterval(timer);
+  }, [currentPlanId, id, latestPlan]);
+
+  function toggleSelectedAgent(agentId: number) {
+    setSelectedAgentIds((current) =>
+      current.includes(agentId) ? current.filter((idValue) => idValue !== agentId) : [...current, agentId]
+    );
+  }
+
+  async function handleSaveBrief() {
+    setActionLoading('brief');
+    setError('');
+    try {
+      const updatedProject = await api.put<Project>(`/api/projects/${id}`, { goal: planningBrief });
+      setProject(updatedProject);
+    } catch (err) {
+      setError(`保存任务介绍失败：${err}`);
+    } finally {
+      setActionLoading('');
+    }
+  }
+
+  async function handleGeneratePrompt() {
+    setActionLoading('generate');
+    setError('');
+    try {
+      if (!planningBrief.trim()) {
+        throw new Error('请先填写并确认任务介绍。');
+      }
+      if (selectedAgentIds.length === 0) {
+        throw new Error('请至少勾选 1 个参与规划的 Agent。');
+      }
+
+      await api.put<Project>(`/api/projects/${id}`, { goal: planningBrief });
+      const result = await api.post<{ prompt: string; plan_id: number; source_path: string }>(
+        `/api/projects/${id}/plans/generate-prompt`,
+        {
+          include_usage: includeUsage,
+          selected_agent_ids: selectedAgentIds,
+        }
+      );
+      setPromptText(result.prompt);
+      setCurrentPlanId(result.plan_id);
+      await fetchPageData();
+    } catch (err) {
+      setError(`生成 Prompt 失败：${err}`);
+    } finally {
+      setActionLoading('');
+    }
+  }
+
+  async function handleCopyPrompt() {
+    setActionLoading('copy');
+    setError('');
+    try {
+      if (!promptText.trim() || !currentPlanId) {
+        throw new Error('请先生成 Prompt。');
+      }
+
+      const copied = await copyText(promptText, navigator.clipboard);
+      if (!copied) {
+        throw new Error('浏览器未能自动复制，请检查页面权限。');
+      }
+
+      const dispatchedPlan = await api.post<Plan>(`/api/projects/${id}/plans/${currentPlanId}/dispatch`);
+      timerStartedAtRef.current = Date.now();
+      setTimerPlanId(dispatchedPlan.id);
+      setElapsedSeconds(0);
+      setCurrentPlanId(dispatchedPlan.id);
+      setPlans((current) => {
+        const others = current.filter((plan) => plan.id !== dispatchedPlan.id);
+        return [...others, dispatchedPlan].sort((left, right) => left.id - right.id);
+      });
+      await fetchPageData();
+    } catch (err) {
+      setError(`拷贝 Prompt 失败：${err}`);
+    } finally {
+      setActionLoading('');
+    }
+  }
+
+  async function handleRefreshPlanStatus() {
+    setActionLoading('poll');
+    setError('');
+    try {
+      await api.post(`/api/projects/${id}/poll`);
+      await fetchPageData();
+    } catch (err) {
+      setError(`刷新规划状态失败：${err}`);
+    } finally {
+      setActionLoading('');
+    }
+  }
+
+  const handleFinalize = useCallback(async (navigateAfterFinalize: boolean) => {
+    const completedPlans = plans.filter((plan) => (plan.status === 'completed' || plan.status === 'final') && plan.plan_json);
+    const planId = getPlanIdToFinalize(completedPlans);
+    if (!planId) {
+      setError('当前还没有可确认的规划结果。');
+      return;
+    }
+    setActionLoading('finalize');
+    setError('');
+    try {
+      await api.post(`/api/projects/${id}/plans/finalize`, { plan_id: planId });
+      if (navigateAfterFinalize) {
+        navigate(`/projects/${id}/tasks`);
+      } else {
+        await fetchPageData();
+      }
+    } catch (err) {
+      const message = String(err);
+      if (message.includes('Project already has tasks from a finalized plan')) {
+        navigate(`/projects/${id}/tasks`);
+        return;
+      }
+      setError(`确认规划失败：${err}`);
+    } finally {
+      setActionLoading('');
+    }
+  }, [fetchPageData, id, navigate, plans]);
+
+  useEffect(() => {
+    if (!latestPlan || isAutoFinalizing) return;
+    if (latestPlan.status === 'final') {
+      navigate(`/projects/${id}/tasks`);
+      return;
+    }
+    if (latestPlan.status !== 'completed' || !latestPlan.plan_json) {
+      autoFinalizeTriggeredRef.current = null;
+      return;
+    }
+    if (autoFinalizeTriggeredRef.current === latestPlan.id) {
+      return;
+    }
+
+    autoFinalizeTriggeredRef.current = latestPlan.id;
+    setIsAutoFinalizing(true);
+    void handleFinalize(true).finally(() => {
+      setIsAutoFinalizing(false);
+    });
+  }, [handleFinalize, id, isAutoFinalizing, latestPlan, navigate]);
+
+  if (loading) return <div className="page-loading">正在加载 Plan...</div>;
+
+  return (
+    <div className="page">
+      <div className="page-header">
+        <h1>Plan 规划</h1>
+        <div className="header-actions">
+          <button className="btn btn-secondary" onClick={handleRefreshPlanStatus} disabled={actionLoading === 'poll'}>
+            {actionLoading === 'poll' ? '刷新中...' : '刷新规划状态'}
+          </button>
+          <button className="btn btn-ghost" onClick={() => navigate(`/projects/${id}`)}>
+            返回项目
+          </button>
+        </div>
+      </div>
+
+      {error && <div className="error-message">{error}</div>}
+
+      <div className="plan-layout">
+        <div className="plan-main-column">
+          <section className="plan-card">
+            <div className="plan-card-header">
+              <div>
+                <h3>1. 任务介绍</h3>
+                <p>先确认这次规划的目标、约束和验收口径。</p>
+              </div>
+              <button className="btn btn-secondary" onClick={handleSaveBrief} disabled={actionLoading === 'brief'}>
+                {actionLoading === 'brief' ? '保存中...' : '确认任务介绍'}
+              </button>
+            </div>
+            <textarea
+              value={planningBrief}
+              onChange={(event) => setPlanningBrief(event.target.value)}
+              rows={6}
+              className="import-textarea"
+              placeholder="请填写本次项目规划的任务介绍、目标、边界和验收标准。"
+            />
+          </section>
+
+          <section className="plan-card">
+            <div className="plan-card-header">
+              <div>
+                <h3>2. 生成规划 Prompt</h3>
+                <p>先勾选这次规划会参与的 Agent，再生成 Prompt。拷贝 Prompt 后才会正式启动后台轮询。</p>
+              </div>
+            </div>
+
+            <div className="plan-field">
+              <label>本次参与规划的 Agent</label>
+              <div className="plan-agent-grid">
+                {projectAgents.map((agent) => (
+                  <label key={agent.id} className="agent-option">
+                    <input
+                      type="checkbox"
+                      checked={selectedAgentIds.includes(agent.id)}
+                      onChange={() => toggleSelectedAgent(agent.id)}
+                    />
+                    <span className="agent-option-name">{agent.name}</span>
+                    <span className="agent-option-type">{agent.agent_type}{agent.model_name ? ` / ${agent.model_name}` : ''}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+
+            <div className="plan-checkbox-row">
+              <label className="checkbox-label">
+                <input
+                  type="checkbox"
+                  checked={includeUsage}
+                  onChange={(event) => setIncludeUsage(event.target.checked)}
+                />
+                是否查询模型用量
+              </label>
+            </div>
+
+            <div className="plan-field">
+              <label>本次发给 Agent 的 Prompt</label>
+              <textarea
+                value={promptText}
+                onChange={(event) => setPromptText(event.target.value)}
+                rows={10}
+                className="import-textarea"
+                placeholder="点击“生成 Prompt”后，这里会显示本次规划 Prompt。"
+              />
+            </div>
+
+            <div className="plan-prompt-actions">
+              <button className="btn btn-secondary" onClick={handleGeneratePrompt} disabled={actionLoading === 'generate'}>
+                {actionLoading === 'generate' ? '生成中...' : '生成 Prompt'}
+              </button>
+              <button className="btn btn-primary" onClick={handleCopyPrompt} disabled={actionLoading === 'copy' || !promptText.trim() || !currentPlanId}>
+                {actionLoading === 'copy' ? '拷贝中...' : '拷贝 Prompt'}
+              </button>
+            </div>
+
+            <div className="plan-status-banner">
+              <div className="plan-status-line">
+                <span className={`status-light status-light-${statusMeta.color}`} />
+                <strong>当前状态：</strong>
+                <span>{statusMeta.text}</span>
+              </div>
+              <div>
+                <strong>轮询路径：</strong>{latestPlan?.source_path || (project?.collaboration_dir ? `${project.collaboration_dir}/plan.json` : 'plan.json')}
+              </div>
+              {latestPlan?.status === 'running' && timerPlanId === latestPlan.id && (
+                <div>
+                  <strong>已运行：</strong>{formatDuration(elapsedSeconds)}
+                </div>
+              )}
+              {isAutoFinalizing && <div>已查询到规划结果，正在自动进入下一页...</div>}
+              {latestPlan?.last_error && <div className="plan-status-error">{latestPlan.last_error}</div>}
+            </div>
+          </section>
+        </div>
+
+        <aside className="plan-side-column">
+          <section className="plan-card">
+            <h3>当前说明</h3>
+            <ul className="plan-note-list">
+              <li>点击“生成 Prompt”只会生成提示词，不会启动轮询。</li>
+              <li>点击“拷贝 Prompt”后才会正式启动或恢复本次规划的轮询。</li>
+              <li>若轮询已完成，再次点击“拷贝 Prompt”会启动新一轮轮询。</li>
+              <li>每一轮规划都会使用唯一文件名，例如 `plan-123.json`，避免复用旧结果。</li>
+              <li>查询到合法规划结果后，系统会自动定稿并跳转到执行页面。</li>
+            </ul>
+          </section>
+        </aside>
+      </div>
+    </div>
+  );
+}
