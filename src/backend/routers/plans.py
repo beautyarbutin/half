@@ -39,7 +39,7 @@ class PlanPromptRequest(BaseModel):
 
 
 class PlanImport(BaseModel):
-    plan_json: str
+    plan_json: str | dict
     source_agent_id: Optional[int] = None
     plan_type: str = "candidate"
 
@@ -175,6 +175,33 @@ def _resolve_assignee_agent_id(db: Session, assignee: Optional[str]) -> Optional
         return exact_type.id
 
     return None
+
+
+def _normalize_task_fields(tasks_data: list[dict]) -> list[dict]:
+    """Normalize legacy field names to canonical ones for backward compatibility.
+
+    Handles:
+      - predecessors -> depends_on
+      - title -> task_name
+      - agent_id -> assignee
+    """
+    normalized = []
+    for t in tasks_data:
+        if not isinstance(t, dict):
+            continue
+        task = dict(t)
+        # predecessors -> depends_on
+        if "depends_on" not in task and "predecessors" in task:
+            task["depends_on"] = task.pop("predecessors")
+        # title -> task_name
+        if "task_name" not in task and "title" in task:
+            task["task_name"] = task.pop("title")
+        # agent_id -> assignee (convert int agent_id to string for resolution)
+        if "assignee" not in task and "agent_id" in task:
+            agent_id_val = task.pop("agent_id")
+            task["assignee"] = str(agent_id_val) if agent_id_val is not None else None
+        normalized.append(task)
+    return normalized
 
 
 class FinalizeRequest(BaseModel):
@@ -314,18 +341,22 @@ def import_plan(project_id: int, body: PlanImport, db: Session = Depends(get_db)
     project = db.query(Project).filter(Project.id == project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
-    # Validate JSON
-    try:
-        json.loads(body.plan_json)
-    except json.JSONDecodeError:
-        raise HTTPException(status_code=400, detail="Invalid JSON in plan_json")
+    # Accept both JSON string and dict object
+    if isinstance(body.plan_json, dict):
+        plan_json_str = json.dumps(body.plan_json, ensure_ascii=False)
+    else:
+        try:
+            json.loads(body.plan_json)
+        except json.JSONDecodeError:
+            raise HTTPException(status_code=400, detail="Invalid JSON in plan_json")
+        plan_json_str = body.plan_json
 
     now = datetime.now(timezone.utc)
     plan = ProjectPlan(
         project_id=project_id,
         source_agent_id=body.source_agent_id,
         plan_type=body.plan_type,
-        plan_json=body.plan_json,
+        plan_json=plan_json_str,
         status="completed",
         source_path=f"{_normalize_collab_dir(project)}/plan.json" if _normalize_collab_dir(project) else "plan.json",
         selected_agent_ids_json="[]",
@@ -380,6 +411,9 @@ def finalize_plan(project_id: int, body: FinalizeRequest, db: Session = Depends(
     if not tasks_data:
         raise HTTPException(status_code=400, detail="Plan contains no tasks")
 
+    # Normalize task fields for backward compatibility
+    tasks_data = _normalize_task_fields(tasks_data)
+
     # Mark plan as selected/final
     plan.is_selected = True
     plan.plan_type = "final"
@@ -389,6 +423,14 @@ def finalize_plan(project_id: int, body: FinalizeRequest, db: Session = Depends(
     # Create task records
     created_tasks = []
     for t in tasks_data:
+        # Compatibility aliases for legacy / external plan schemas (T1-ANALYZE F-P0-06, F-P1-03/04)
+        if isinstance(t, dict):
+            if "depends_on" not in t and "predecessors" in t:
+                t["depends_on"] = t.get("predecessors")
+            if "task_name" not in t and "title" in t:
+                t["task_name"] = t.get("title")
+            if "assignee" not in t and "agent_id" in t:
+                t["assignee"] = t.get("agent_id")
         task_code = t.get("task_code")
         if not task_code:
             raise HTTPException(status_code=400, detail="Each task must have a task_code")

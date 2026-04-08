@@ -39,7 +39,9 @@ describe('contracts helpers', () => {
     };
     const clipboard = { writeText: vi.fn(async () => {}) };
 
-    const prompt = await copyTaskPromptAndDispatch(api, clipboard, 42, true);
+    const prompt = await copyTaskPromptAndDispatch(api, clipboard, 42, {
+      includeUsage: true,
+    });
 
     expect(prompt).toBe('prompt-body');
     expect(clipboard.writeText).toHaveBeenCalledWith('prompt-body');
@@ -50,7 +52,38 @@ describe('contracts helpers', () => {
       },
       {
         path: '/api/tasks/42/dispatch',
-        body: undefined,
+        body: { ignore_missing_predecessor_outputs: false },
+      },
+    ]);
+  });
+
+  it('routes to /redispatch when action is redispatch and still copies the prompt', async () => {
+    const calls: Array<{ path: string; body: unknown }> = [];
+    const api = {
+      post: vi.fn(async (path: string, body?: unknown) => {
+        calls.push({ path, body });
+        if (path.endsWith('/generate-prompt')) {
+          return { prompt: 'redo-body' };
+        }
+        return {};
+      }),
+    };
+    const clipboard = { writeText: vi.fn(async () => {}) };
+
+    const prompt = await copyTaskPromptAndDispatch(api, clipboard, 7, {
+      action: 'redispatch',
+    });
+
+    expect(prompt).toBe('redo-body');
+    expect(clipboard.writeText).toHaveBeenCalledWith('redo-body');
+    expect(calls).toEqual([
+      {
+        path: '/api/tasks/7/generate-prompt',
+        body: { include_usage: false },
+      },
+      {
+        path: '/api/tasks/7/redispatch',
+        body: { ignore_missing_predecessor_outputs: false },
       },
     ]);
   });

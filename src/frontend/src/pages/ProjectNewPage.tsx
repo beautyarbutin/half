@@ -121,6 +121,8 @@ export default function ProjectNewPage() {
       const project = isEditMode
         ? await api.put<Project>(`/api/projects/${id}`, payload)
         : await api.post<Project>('/api/projects', payload);
+      // 刚保存过的项目会立刻进入详情页，需要让 stale-while-revalidate 缓存丢弃旧值
+      api.invalidate(`/api/projects/${project.id}`);
       navigate(`/projects/${project.id}`);
     } catch (err) {
       setError(`${isEditMode ? '更新' : '创建'}失败：${err}`);

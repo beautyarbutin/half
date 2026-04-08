@@ -47,15 +47,15 @@ export default function SummaryPage() {
   const [loading, setLoading] = useState(true);
 
   const fetchData = useCallback(async () => {
+    // agents、project 走 stale-while-revalidate 缓存，避免每次切到摘要页都整页 loading。
+    void api.getCached<Agent[]>('/api/agents', (value) => setAgents(value));
+    void api.getCached<Project>(`/api/projects/${id}`, (value) => {
+      setProject(value);
+      setLoading(false);
+    });
     try {
-      const [proj, summary, agentList] = await Promise.all([
-        api.get<Project>(`/api/projects/${id}`),
-        api.get<ProjectSummaryResponse>(`/api/projects/${id}/summary`),
-        api.get<Agent[]>('/api/agents'),
-      ]);
-      setProject(proj);
+      const summary = await api.get<ProjectSummaryResponse>(`/api/projects/${id}/summary`);
       setTasks(summary.tasks);
-      setAgents(agentList);
       setEvents(summary.events ?? []);
     } catch {
       // ignore

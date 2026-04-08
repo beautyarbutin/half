@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import random
+from pathlib import PurePosixPath
 from datetime import datetime, timezone, timedelta
 
 from sqlalchemy.orm import Session
@@ -54,6 +55,65 @@ def _task_usage_path(project: Project, task: Task) -> str:
     if "/" in result_path:
         return result_path.rsplit("/", 1)[0] + "/usage.json"
     return "usage.json"
+
+
+def _is_json_result_path(result_path: str) -> bool:
+    return PurePosixPath(result_path).suffix.casefold() == ".json"
+
+
+_RESULT_FALLBACK_SUFFIXES = (".md", ".json", ".txt", ".yaml", ".yml")
+
+
+def _detect_task_result(project: Project, task: Task) -> tuple[bool, str | None]:
+    """Detect a task result via multiple strategies.
+
+    Strategies, in order (T1-ANALYZE F-P1-06):
+      1. Exact result_path (JSON path matches by task_code; other paths by existence)
+      2. Common-suffix completion when expected_output is given without an extension
+      3. Sibling files in the same directory whose stem starts with the expected stem
+      4. Directory existence with at least one non-empty file inside
+    Hits return the actually-matched path so it can be persisted to result_file_path.
+    """
+    result_path = _task_result_path(project, task)
+
+    # Strategy 1: exact path
+    if _is_json_result_path(result_path):
+        result_data = git_service.read_json(project.id, result_path, git_repo_url=project.git_repo_url)
+        if result_data and result_data.get("task_code") == task.task_code:
+            return True, result_path
+    else:
+        if git_service.file_exists(project.id, result_path, git_repo_url=project.git_repo_url):
+            return True, result_path
+
+    # Strategy 2: suffix completion
+    if "." not in PurePosixPath(result_path).name:
+        for suffix in _RESULT_FALLBACK_SUFFIXES:
+            candidate = result_path + suffix
+            if git_service.file_exists(project.id, candidate, git_repo_url=project.git_repo_url):
+                return True, candidate
+
+    # Strategy 3: same-directory prefix match (handles "auto-renamed" / truncated outputs)
+    parent = str(PurePosixPath(result_path).parent)
+    stem = PurePosixPath(result_path).stem
+    if stem and parent and parent != ".":
+        try:
+            entries = git_service.list_dir(project.id, parent, git_repo_url=project.git_repo_url)
+        except Exception:
+            entries = []
+        for entry in entries or []:
+            entry_path = f"{parent}/{entry}"
+            if entry == PurePosixPath(result_path).name:
+                continue
+            entry_stem = PurePosixPath(entry).stem
+            if entry_stem.startswith(stem) or stem.startswith(entry_stem):
+                if git_service.file_exists(project.id, entry_path, git_repo_url=project.git_repo_url):
+                    return True, entry_path
+
+    # Strategy 4: directory-as-output
+    if git_service.dir_has_content(project.id, result_path, git_repo_url=project.git_repo_url):
+        return True, result_path
+
+    return False, result_path
 
 
 def poll_project(db: Session, project: Project) -> None:
@@ -129,10 +189,9 @@ def poll_project(db: Session, project: Project) -> None:
                 project.id, task.task_code, delay_seconds,
             )
             continue
-        result_path = _task_result_path(project, task)
-        result_data = git_service.read_json(project.id, result_path, git_repo_url=project.git_repo_url)
+        result_detected, result_path = _detect_task_result(project, task)
 
-        if result_data and result_data.get("task_code") == task.task_code:
+        if result_detected:
             task.status = "completed"
             task.completed_at = now
             task.result_file_path = result_path

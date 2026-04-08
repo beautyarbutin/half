@@ -11,6 +11,7 @@ from models import Project, Task, TaskEvent, User
 from auth import get_current_user
 from services.path_service import normalize_expected_output_path
 from services.prompt_service import generate_task_prompt
+from services import git_service
 
 router = APIRouter(tags=["tasks"])
 
@@ -51,6 +52,10 @@ class TaskUpdateRequest(BaseModel):
     task_name: str
     description: str = ""
     expected_output_path: str = ""
+
+
+class TaskDispatchRequest(BaseModel):
+    ignore_missing_predecessor_outputs: bool = False
 
 
 # Project-scoped task list
@@ -129,6 +134,149 @@ def update_task(
     return task
 
 
+class MissingPredecessor(BaseModel):
+    task_code: str
+    task_name: str
+    expected_path: str
+
+
+class PredecessorStatusResponse(BaseModel):
+    task_id: int
+    ready: bool
+    missing: list[MissingPredecessor]
+    refreshed: bool
+
+
+def _compute_predecessor_status(db: Session, task: Task, refresh: bool) -> PredecessorStatusResponse:
+    project = db.query(Project).filter(Project.id == task.project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    # Server-side git fetch/pull is intentionally NOT triggered here. Pulling on
+    # the deploy host is meaningless for dispatch — the executing Agent runs on
+    # its own machine and is responsible for `git pull` before reading
+    # predecessor outputs (the generated prompt enforces this). This endpoint is
+    # now kept only for compatibility/diagnostic purposes and does not
+    # participate in the normal page-side dispatch flow.
+    refreshed = False
+
+    try:
+        depends_on = json.loads(task.depends_on_json or "[]")
+    except json.JSONDecodeError:
+        depends_on = []
+
+    missing: list[MissingPredecessor] = []
+    if depends_on:
+        collab = (project.collaboration_dir or "").strip("/")
+        predecessors = db.query(Task).filter(
+            Task.project_id == project.id,
+            Task.task_code.in_(depends_on),
+        ).all()
+        pmap = {p.task_code: p for p in predecessors}
+        for code in depends_on:
+            p = pmap.get(code)
+            if not p:
+                missing.append(MissingPredecessor(task_code=code, task_name="(未知)", expected_path=""))
+                continue
+            if p.status == "abandoned":
+                continue
+            if p.status != "completed":
+                continue
+            path = p.result_file_path or normalize_expected_output_path(
+                p.expected_output_path,
+                default_path=f"outputs/{p.task_code}/result.json",
+                collaboration_dir=collab,
+            )
+            exists = git_service.file_exists(project.id, path, git_repo_url=project.git_repo_url)
+            if not exists:
+                missing.append(MissingPredecessor(task_code=p.task_code, task_name=p.task_name, expected_path=path))
+
+    return PredecessorStatusResponse(
+        task_id=task.id,
+        ready=len(missing) == 0,
+        missing=missing,
+        refreshed=refreshed,
+    )
+
+
+@router.get("/api/tasks/{task_id}/predecessor-status", response_model=PredecessorStatusResponse)
+def get_predecessor_status(task_id: int, refresh: bool = False, db: Session = Depends(get_db), _user: User = Depends(get_current_user)):
+    task = db.query(Task).filter(Task.id == task_id).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return _compute_predecessor_status(db, task, refresh=refresh)
+
+
+@router.get("/api/projects/{project_id}/predecessor-status", response_model=list[PredecessorStatusResponse])
+def list_project_predecessor_status(project_id: int, refresh: bool = False, db: Session = Depends(get_db), _user: User = Depends(get_current_user)):
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    # Server-side git fetch/pull is intentionally NOT triggered here. See the
+    # rationale in `_compute_predecessor_status`.
+    _ = refresh
+    tasks = db.query(Task).filter(Task.project_id == project_id).all()
+
+    # 批量优化：原实现对每个任务都重新查 Project、重新查依赖任务，并对每个
+    # missing 路径单独调用 git_service.file_exists。任务量稍多时会出现明显的
+    # N+1 数据库查询和重复 git 操作。虽然当前任务页面已不再依赖本接口参与派发
+    # 流程，但保留为诊断接口时仍应保证其开销可控。
+    #
+    # 这里把循环里的开销集中到单次：
+    #   - Project 已在上面取过一次
+    #   - 用一次查询拿出本项目所有任务，构建 task_code -> Task 映射
+    #   - file_exists(path) 在本次请求范围内做结果缓存，重复路径不再二次访问 git
+    collab = (project.collaboration_dir or "").strip("/")
+    code_to_task: dict[str, Task] = {t.task_code: t for t in tasks if t.task_code}
+
+    file_exists_cache: dict[str, bool] = {}
+
+    def _file_exists_cached(path: str) -> bool:
+        if path in file_exists_cache:
+            return file_exists_cache[path]
+        ok = git_service.file_exists(project.id, path, git_repo_url=project.git_repo_url)
+        file_exists_cache[path] = ok
+        return ok
+
+    results: list[PredecessorStatusResponse] = []
+    for task in tasks:
+        try:
+            depends_on = json.loads(task.depends_on_json or "[]")
+        except json.JSONDecodeError:
+            depends_on = []
+
+        missing: list[MissingPredecessor] = []
+        for code in depends_on:
+            p = code_to_task.get(code)
+            if not p:
+                missing.append(MissingPredecessor(task_code=code, task_name="(未知)", expected_path=""))
+                continue
+            if p.status == "abandoned":
+                continue
+            if p.status != "completed":
+                continue
+            path = p.result_file_path or normalize_expected_output_path(
+                p.expected_output_path,
+                default_path=f"outputs/{p.task_code}/result.json",
+                collaboration_dir=collab,
+            )
+            if not _file_exists_cached(path):
+                missing.append(
+                    MissingPredecessor(task_code=p.task_code, task_name=p.task_name, expected_path=path)
+                )
+
+        results.append(
+            PredecessorStatusResponse(
+                task_id=task.id,
+                ready=len(missing) == 0,
+                missing=missing,
+                refreshed=False,
+            )
+        )
+    return results
+
+
 # Generate execution prompt
 @router.post("/api/tasks/{task_id}/generate-prompt", response_model=PromptResponse)
 def task_generate_prompt(task_id: int, body: PromptRequest = PromptRequest(), db: Session = Depends(get_db), _user: User = Depends(get_current_user)):
@@ -143,14 +291,12 @@ def task_generate_prompt(task_id: int, body: PromptRequest = PromptRequest(), db
 
 
 # Dispatch task
-@router.post("/api/tasks/{task_id}/dispatch", response_model=TaskResponse)
-def dispatch_task(task_id: int, db: Session = Depends(get_db), _user: User = Depends(get_current_user)):
-    task = db.query(Task).filter(Task.id == task_id).first()
-    if not task:
-        raise HTTPException(status_code=404, detail="Task not found")
-    if task.status not in ("pending", "needs_attention"):
-        raise HTTPException(status_code=400, detail=f"Cannot dispatch task in status: {task.status}")
-
+def _validate_dispatch_predecessors(
+    db: Session,
+    task: Task,
+    *,
+    ignore_missing_predecessor_outputs: bool,
+) -> None:
     depends_on: list[str] = []
     try:
         depends_on = json.loads(task.depends_on_json or "[]")
@@ -172,6 +318,36 @@ def dispatch_task(task_id: int, db: Session = Depends(get_db), _user: User = Dep
                 status_code=400,
                 detail=f"Cannot dispatch task before predecessors are completed or abandoned: {', '.join(blocked_codes)}",
             )
+
+    # NOTE: Predecessor output file presence is no longer enforced on the
+    # server. The deploy host should not git fetch/pull on demand — that
+    # operation is only meaningful on the Agent's own machine, and the
+    # generated prompt instructs the Agent to `git pull` before reading
+    # predecessor outputs. We trust predecessor task statuses (above) and
+    # leave file-level verification to the Agent. The
+    # `ignore_missing_predecessor_outputs` flag is kept on the request for
+    # API compatibility but is now a no-op.
+    _ = ignore_missing_predecessor_outputs
+
+
+@router.post("/api/tasks/{task_id}/dispatch", response_model=TaskResponse)
+def dispatch_task(
+    task_id: int,
+    body: TaskDispatchRequest = TaskDispatchRequest(),
+    db: Session = Depends(get_db),
+    _user: User = Depends(get_current_user),
+):
+    task = db.query(Task).filter(Task.id == task_id).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    if task.status not in ("pending", "needs_attention"):
+        raise HTTPException(status_code=400, detail=f"Cannot dispatch task in status: {task.status}")
+
+    _validate_dispatch_predecessors(
+        db,
+        task,
+        ignore_missing_predecessor_outputs=body.ignore_missing_predecessor_outputs,
+    )
 
     now = datetime.now(timezone.utc)
     task.status = "running"
@@ -252,23 +428,48 @@ def abandon_task(task_id: int, db: Session = Depends(get_db), _user: User = Depe
 
 # Redispatch task
 @router.post("/api/tasks/{task_id}/redispatch", response_model=TaskResponse)
-def redispatch_task(task_id: int, db: Session = Depends(get_db), _user: User = Depends(get_current_user)):
+def redispatch_task(
+    task_id: int,
+    body: TaskDispatchRequest = TaskDispatchRequest(),
+    db: Session = Depends(get_db),
+    _user: User = Depends(get_current_user),
+):
     task = db.query(Task).filter(Task.id == task_id).first()
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
-    if task.status not in ("needs_attention", "running"):
+    if task.status not in ("needs_attention", "running", "abandoned"):
         raise HTTPException(status_code=400, detail=f"Cannot redispatch task in status: {task.status}")
 
+    _validate_dispatch_predecessors(
+        db,
+        task,
+        ignore_missing_predecessor_outputs=body.ignore_missing_predecessor_outputs,
+    )
+
     now = datetime.now(timezone.utc)
+    prev_status = task.status
+    prev_error = task.last_error
     task.status = "running"
     task.dispatched_at = now
     task.last_error = None
     task.updated_at = now
+    detail = (
+        f"Task redispatched from {prev_status}. Previous error: {prev_error}"
+        if prev_error
+        else f"Task redispatched from {prev_status}"
+    )
     db.add(TaskEvent(
         task_id=task.id,
         event_type="redispatched",
-        detail="Task redispatched",
+        detail=detail,
     ))
+
+    # If project was completed but we're re-dispatching, set it back to executing
+    project = db.query(Project).filter(Project.id == task.project_id).first()
+    if project and project.status == "completed":
+        project.status = "executing"
+        project.updated_at = now
+
     db.commit()
     db.refresh(task)
     return task

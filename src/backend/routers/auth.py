@@ -1,12 +1,14 @@
 import re
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, field_validator
 from sqlalchemy.orm import Session
 
 from database import get_db
 from models import User
+from config import settings as app_settings
 from auth import verify_password, hash_password, create_token, get_current_user
+from middleware.rate_limit import login_limiter
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -62,6 +64,11 @@ class UserResponse(BaseModel):
 
 @router.post("/register", response_model=LoginResponse)
 def register(body: RegisterRequest, db: Session = Depends(get_db)):
+    if not app_settings.ALLOW_REGISTER:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Registration is disabled. Contact your administrator.",
+        )
     existing = db.query(User).filter(User.username == body.username).first()
     if existing:
         raise HTTPException(
@@ -80,10 +87,16 @@ def register(body: RegisterRequest, db: Session = Depends(get_db)):
 
 
 @router.post("/login", response_model=LoginResponse)
-def login(body: LoginRequest, db: Session = Depends(get_db)):
+def login(body: LoginRequest, request: Request = None, db: Session = Depends(get_db)):
+    rate_key = f"login:{body.username}"
+    login_limiter.check(rate_key)
+
     user = db.query(User).filter(User.username == body.username).first()
     if not user or not verify_password(body.password, user.password_hash):
+        login_limiter.record_failure(rate_key)
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="用户名或密码错误")
+
+    login_limiter.record_success(rate_key)
     token = create_token(user.id, user.username)
     return LoginResponse(token=token, user_id=user.id, username=user.username)
 

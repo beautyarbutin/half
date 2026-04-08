@@ -32,6 +32,7 @@ interface Props {
   tasks: Task[];
   selectedTaskId?: number | null;
   onSelectTask: (taskId: number) => void;
+  missingPredecessorIds?: Set<number>;
 }
 
 function computeLayout(tasks: Task[]): Map<string, { x: number; y: number }> {
@@ -112,7 +113,7 @@ function getVisualStatus(task: Task, tasks: Task[]): string {
   return isReady ? 'pending_ready' : 'pending_blocked';
 }
 
-export default function DagView({ tasks, selectedTaskId, onSelectTask }: Props) {
+export default function DagView({ tasks, selectedTaskId, onSelectTask, missingPredecessorIds }: Props) {
   const { initialNodes, initialEdges } = useMemo(() => {
     const positions = computeLayout(tasks);
 
@@ -121,6 +122,7 @@ export default function DagView({ tasks, selectedTaskId, onSelectTask }: Props) 
       const visualStatus = getVisualStatus(task, tasks);
       const statusColor = STATUS_COLORS[visualStatus] || '#9ca3af';
       const isSelected = task.id === selectedTaskId;
+      const isMissing = missingPredecessorIds?.has(task.id) ?? false;
 
       return {
         id: String(task.id),
@@ -145,8 +147,8 @@ export default function DagView({ tasks, selectedTaskId, onSelectTask }: Props) 
         sourcePosition: Position.Bottom,
         targetPosition: Position.Top,
         style: {
-          background: STATUS_BACKGROUNDS[visualStatus] || '#f8fafc',
-          border: `2px solid ${isSelected ? '#3b82f6' : statusColor}`,
+          background: isMissing ? '#fee2e2' : (STATUS_BACKGROUNDS[visualStatus] || '#f8fafc'),
+          border: `2px solid ${isSelected ? '#3b82f6' : (isMissing ? '#dc2626' : statusColor)}`,
           borderRadius: '8px',
           padding: '8px 12px',
           width: 180,
@@ -179,7 +181,7 @@ export default function DagView({ tasks, selectedTaskId, onSelectTask }: Props) 
     });
 
     return { initialNodes: nodes, initialEdges: edges };
-  }, [tasks, selectedTaskId]);
+  }, [tasks, selectedTaskId, missingPredecessorIds]);
 
   const onNodeClick = useCallback(
     (_: React.MouseEvent, node: Node) => {

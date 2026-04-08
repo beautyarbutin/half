@@ -28,6 +28,7 @@ class GitServiceWorkspaceFallbackTests(unittest.TestCase):
         settings.REPOS_DIR = str(self.repos_dir)
         settings.WORKSPACE_ROOT = str(self.workspace_dir)
         git_service._workspace_repo_identity.cache_clear()
+        git_service._ensure_repo_last_run.clear()
         self.addCleanup(self._restore_settings)
 
     def _restore_settings(self):

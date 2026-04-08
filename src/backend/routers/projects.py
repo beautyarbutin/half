@@ -11,6 +11,7 @@ from database import get_db
 from models import Agent, Project, ProjectPlan, Task, TaskEvent, User
 from auth import get_current_user
 from services.polling_config_service import get_global_polling_settings
+from services.git_service import validate_git_url
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
 
@@ -240,6 +241,11 @@ def _resolve_polling_snapshot(
 
 @router.post('', response_model=ProjectResponse, status_code=201)
 def create_project(body: ProjectCreate, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    if body.git_repo_url:
+        try:
+            body.git_repo_url = validate_git_url(body.git_repo_url)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
     agent_ids = _validate_agent_ids(db, body.agent_ids)
     _validate_polling_params(
         body.polling_interval_min,
@@ -299,6 +305,11 @@ def update_project(project_id: int, body: ProjectUpdate, db: Session = Depends(g
     update_data = body.model_dump(exclude_unset=True)
     if not update_data:
         raise HTTPException(status_code=400, detail="No fields to update")
+    if 'git_repo_url' in update_data and update_data['git_repo_url']:
+        try:
+            update_data['git_repo_url'] = validate_git_url(update_data['git_repo_url'])
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
     if 'agent_ids' in update_data:
         update_data['agent_ids_json'] = json.dumps(_validate_agent_ids(db, update_data.pop('agent_ids')))
     if 'collaboration_dir' in update_data:

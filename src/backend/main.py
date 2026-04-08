@@ -7,7 +7,7 @@ from fastapi import FastAPI
 from sqlalchemy import inspect, text
 from fastapi.middleware.cors import CORSMiddleware
 
-from config import settings
+from config import settings, validate_security_config
 from database import engine, SessionLocal, Base
 from models import User, AgentTypeConfig, ModelDefinition, AgentTypeModelMap, ProjectPlan, Task, GlobalSetting
 from auth import hash_password
@@ -320,6 +320,7 @@ def init_db():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
+    validate_security_config()
     init_db()
     logger.info("Database initialized")
     poller_task = asyncio.create_task(polling_loop(settings.POLL_INTERVAL_SECONDS))
@@ -336,12 +337,23 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="HALF Backend", version="1.0.0", lifespan=lifespan)
 
+_cors_origins_raw = (settings.CORS_ALLOW_ORIGINS or "").strip()
+if _cors_origins_raw:
+    _cors_origins = [o.strip() for o in _cors_origins_raw.split(",") if o.strip()]
+    _cors_credentials = True
+else:
+    # No explicit allow-list configured. Fall back to wildcard but disable
+    # credentials so the combination cannot be exploited as a confused-deputy
+    # CSRF vector. Operators should set HALF_CORS_ORIGINS in production.
+    _cors_origins = ["*"]
+    _cors_credentials = False
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=_cors_origins,
+    allow_credentials=_cors_credentials,
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
 )
 
 app.include_router(auth_router.router)

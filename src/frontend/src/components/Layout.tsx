@@ -11,12 +11,12 @@ export default function Layout() {
 
   return (
     <div className="app-layout">
-      <aside className="sidebar">
+      <aside className="sidebar" role="banner">
         <div className="sidebar-brand">
           <h2>HALF</h2>
           <span className="sidebar-subtitle">Human-AI Loop Framework</span>
         </div>
-        <nav className="sidebar-nav">
+        <nav className="sidebar-nav" role="navigation" aria-label="Main navigation">
           <NavLink to="/projects" className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'}>
             项目
           </NavLink>
@@ -30,7 +30,7 @@ export default function Layout() {
           </button>
         </div>
       </aside>
-      <main className="main-content">
+      <main className="main-content" role="main" aria-label="Page content">
         <Outlet />
       </main>
     </div>

@@ -47,14 +47,18 @@ export default function PlanPage() {
   const autoFinalizeTriggeredRef = useRef<number | null>(null);
 
   const fetchPageData = useCallback(async () => {
+    // 跨页面共享的 agents 走 stale-while-revalidate 缓存，避免每次切页都白屏等待。
+    void api.getCached<Agent[]>('/api/agents', (value) => setAgents(value));
+    void api.getCached<Project>(`/api/projects/${id}`, (value) => {
+      setProject(value);
+      setLoading(false);
+    });
     try {
-      const [projectData, agentList, planList] = await Promise.all([
+      const [projectData, planList] = await Promise.all([
         api.get<Project>(`/api/projects/${id}`),
-        api.get<Agent[]>('/api/agents'),
         api.get<Plan[]>(`/api/projects/${id}/plans`),
       ]);
       setProject(projectData);
-      setAgents(agentList);
       setPlans(planList);
       setPlanningBrief((current) => current || projectData.goal || '');
 

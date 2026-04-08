@@ -58,6 +58,12 @@ export function getPlanIdToFinalize(plans: Plan[]): number | null {
   return selectedPlan ? selectedPlan.id : null;
 }
 
+interface CopyTaskPromptOptions {
+  includeUsage?: boolean;
+  ignoreMissingPredecessorOutputs?: boolean;
+  action?: 'dispatch' | 'redispatch';
+}
+
 interface ApiClientLike {
   post<T>(path: string, body?: unknown): Promise<T>;
 }
@@ -103,12 +109,16 @@ export async function copyTaskPromptAndDispatch(
   api: ApiClientLike,
   clipboard: ClipboardLike | undefined,
   taskId: number,
+  options: CopyTaskPromptOptions = {},
 ): Promise<string> {
   const promptResponse = await api.post<{ prompt: string }>(
     `/api/tasks/${taskId}/generate-prompt`,
-    {}
+    { include_usage: options.includeUsage ?? false }
   );
   await copyText(promptResponse.prompt, clipboard);
-  await api.post(`/api/tasks/${taskId}/dispatch`);
+  const action = options.action ?? 'dispatch';
+  await api.post(`/api/tasks/${taskId}/${action}`, {
+    ignore_missing_predecessor_outputs: options.ignoreMissingPredecessorOutputs ?? false,
+  });
   return promptResponse.prompt;
 }

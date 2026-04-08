@@ -309,6 +309,7 @@ export default function AgentsPage() {
       };
       if (editingId) await api.put(`/api/agents/${editingId}`, payload);
       else await api.post('/api/agents', payload);
+      api.invalidate('/api/agents');
       setShowForm(false);
       setEditingId(null);
       fetchAgents();
@@ -319,7 +320,7 @@ export default function AgentsPage() {
   async function handleDelete(agent: Agent) {
     if (!confirm(`确认删除 "${agent.name}" 吗？`)) return;
     setDeletingId(agent.id); setError('');
-    try { await api.delete(`/api/agents/${agent.id}`); fetchAgents(); }
+    try { await api.delete(`/api/agents/${agent.id}`); api.invalidate('/api/agents'); fetchAgents(); }
     catch (err) { setError(`删除失败：${err}`); }
     finally { setDeletingId(null); }
   }

@@ -246,7 +246,7 @@ def _advance_reset_time_monthly(current: Optional[datetime]) -> Optional[datetim
 
 def _normalize_agent_reset_times(agent: Agent, *, mark_confirmation: bool) -> bool:
     next_short = _advance_reset_time(agent.short_term_reset_at, agent.short_term_reset_interval_hours, hours=True)
-    mode = agent.long_term_reset_mode or "days"
+    mode = getattr(agent, "long_term_reset_mode", None) or "days"
     if mode == "monthly":
         next_long = _advance_reset_time_monthly(agent.long_term_reset_at)
     else:
@@ -255,11 +255,11 @@ def _normalize_agent_reset_times(agent: Agent, *, mark_confirmation: bool) -> bo
     if changed:
         if mark_confirmation and next_short != agent.short_term_reset_at:
             agent.short_term_reset_needs_confirmation = True
-            if agent.availability_status == "short_reset_pending":
+            if getattr(agent, "availability_status", None) == "short_reset_pending":
                 agent.availability_status = "available"
         if mark_confirmation and next_long != agent.long_term_reset_at:
             agent.long_term_reset_needs_confirmation = True
-            if agent.availability_status == "long_reset_pending":
+            if getattr(agent, "availability_status", None) == "long_reset_pending":
                 agent.availability_status = "available"
         agent.short_term_reset_at = next_short
         agent.long_term_reset_at = next_long
@@ -339,6 +339,11 @@ def reorder_agents(body: ReorderRequest, db: Session = Depends(get_db), _user: U
 
 @router.post("", response_model=AgentResponse, status_code=status.HTTP_201_CREATED)
 def create_agent(body: AgentCreate, db: Session = Depends(get_db), _user: User = Depends(get_current_user)):
+    if not body.name or not body.name.strip():
+        raise HTTPException(status_code=400, detail="Agent name is required")
+    existing = db.query(Agent).filter(Agent.name == body.name.strip()).first()
+    if existing:
+        raise HTTPException(status_code=400, detail=f"Agent with name '{body.name.strip()}' already exists")
     payload = _normalize_agent_input(body.model_dump())
     payload["slug"] = _generate_unique_slug(db, body.name)
     agent = Agent(**payload)

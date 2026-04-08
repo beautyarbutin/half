@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { Task, Agent } from '../types';
 import { api } from '../api/client';
 import StatusBadge from './StatusBadge';
-import { copyTaskPromptAndDispatch } from '../contracts';
+import { copyText } from '../contracts';
 
 interface Props {
   task: Task;
@@ -29,7 +29,6 @@ export default function TaskDetailPanel({ task, agents, allTasks, onRefresh }: P
   } catch {
     deps = [];
   }
-
   const predecessorTasks = allTasks.filter((t) => deps.includes(t.task_code));
   const blockedPredecessors = predecessorTasks.filter(
     (predecessorTask) => predecessorTask.status !== 'completed' && predecessorTask.status !== 'abandoned'
@@ -80,16 +79,29 @@ export default function TaskDetailPanel({ task, agents, allTasks, onRefresh }: P
     return () => window.clearTimeout(timer);
   }, [saveState]);
 
-  async function handleCopyPrompt() {
+  async function performDispatch(action: 'dispatch' | 'redispatch') {
     if (!canOperate) {
       alert(`前序任务尚未全部完成，无法派发：${blockedPredecessors.map((taskItem) => taskItem.task_code).join(', ')}`);
       return;
     }
-    setLoading('dispatch');
+    setLoading(action);
     try {
-      await copyTaskPromptAndDispatch(api, navigator.clipboard, task.id);
+      // 1) Generate the prompt and put it on the clipboard FIRST. The user
+      //    cares about getting the prompt back as fast as possible — they're
+      //    about to paste it into an Agent. Show "已复制" immediately.
+      const promptResp = await api.post<{ prompt: string }>(
+        `/api/tasks/${task.id}/generate-prompt`,
+        { include_usage: false },
+      );
+      await copyText(promptResp.prompt, navigator.clipboard);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
+
+      // 2) Then tell the backend the task has been dispatched. This is now a
+      //    pure DB write (no server-side git fetch/pull), so it's fast.
+      await api.post(`/api/tasks/${task.id}/${action}`, {
+        ignore_missing_predecessor_outputs: false,
+      });
       setShowDispatchReminder(false);
       if (dispatchReminderRef.current) clearTimeout(dispatchReminderRef.current);
       dispatchReminderRef.current = window.setTimeout(() => setShowDispatchReminder(true), 5 * 60 * 1000);
@@ -101,16 +113,12 @@ export default function TaskDetailPanel({ task, agents, allTasks, onRefresh }: P
     }
   }
 
+  async function handleCopyPrompt() {
+    await performDispatch('dispatch');
+  }
+
   async function handleRedispatch() {
-    setLoading('redispatch');
-    try {
-      await api.post(`/api/tasks/${task.id}/redispatch`);
-      onRefresh();
-    } catch (err) {
-      alert(`重新派发失败：${err}`);
-    } finally {
-      setLoading('');
-    }
+    await performDispatch('redispatch');
   }
 
   async function handleMarkComplete() {
@@ -287,9 +295,13 @@ export default function TaskDetailPanel({ task, agents, allTasks, onRefresh }: P
             className="btn btn-secondary"
             onClick={handleRedispatch}
             disabled={loading === 'redispatch'}
-            title="将当前任务重新派发给对应 Agent"
+            title="重新生成当前任务的 Prompt，复制到剪贴板，并重新派发"
           >
-            重新派发
+            {loading === 'redispatch'
+              ? '派发中...'
+              : copied
+                ? 'Prompt 已复制'
+                : '重新派发'}
           </button>
         )}
 

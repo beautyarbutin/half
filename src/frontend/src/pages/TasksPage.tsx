@@ -15,16 +15,20 @@ export default function TasksPage() {
   const [selectedTaskId, setSelectedTaskId] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const lastFetchAtRef = React.useRef<number>(0);
+
   const fetchData = useCallback(async () => {
+    lastFetchAtRef.current = Date.now();
+    // 跨页面共享的 /api/agents、/api/projects/:id 走 stale-while-revalidate 缓存：
+    // 命中时立刻渲染旧值，再后台刷新；这样切回任务页时不会再整页白屏。
+    void api.getCached<Agent[]>('/api/agents', (value) => setAgents(value));
+    void api.getCached<Project>(`/api/projects/${id}`, (value) => {
+      setProject(value);
+      setLoading(false);
+    });
     try {
-      const [proj, taskList, agentList] = await Promise.all([
-        api.get<Project>(`/api/projects/${id}`),
-        api.get<Task[]>(`/api/projects/${id}/tasks`),
-        api.get<Agent[]>('/api/agents'),
-      ]);
-      setProject(proj);
+      const taskList = await api.get<Task[]>(`/api/projects/${id}/tasks`);
       setTasks(taskList);
-      setAgents(agentList);
     } catch {
       // ignore
     } finally {
@@ -52,13 +56,16 @@ export default function TasksPage() {
   }, [fetchData, project, tasks]);
 
   useEffect(() => {
-    const refreshOnFocus = () => {
+    // focus / visibilitychange 上的刷新做 2s 节流，避免与 5s 轮询、
+    // React StrictMode 双调用、以及快速切页叠加在一起。
+    const THROTTLE_MS = 2000;
+    const maybeRefresh = () => {
+      if (Date.now() - lastFetchAtRef.current < THROTTLE_MS) return;
       void fetchData();
     };
+    const refreshOnFocus = () => maybeRefresh();
     const refreshOnVisible = () => {
-      if (document.visibilityState === 'visible') {
-        void fetchData();
-      }
+      if (document.visibilityState === 'visible') maybeRefresh();
     };
 
     window.addEventListener('focus', refreshOnFocus);
@@ -124,6 +131,7 @@ export default function TasksPage() {
             tasks={tasksWithAgentLabels}
             selectedTaskId={selectedTaskId}
             onSelectTask={setSelectedTaskId}
+            missingPredecessorIds={new Set()}
           />
         </div>
         <div className="tasks-detail-panel">
