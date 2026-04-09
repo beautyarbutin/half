@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { api } from '../api/client';
+import { api, extractApiErrorDetail } from '../api/client';
 
 const PASSWORD_REGEX = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d).{6,}$/;
 
@@ -17,9 +17,30 @@ export default function LoginPage() {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
+  const [allowRegister, setAllowRegister] = useState(false);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
+
+  useEffect(() => {
+    let cancelled = false;
+
+    api.get<{ allow_register: boolean }>('/api/auth/config')
+      .then((result) => {
+        if (!cancelled) {
+          setAllowRegister(Boolean(result.allow_register));
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setAllowRegister(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -57,14 +78,17 @@ export default function LoginPage() {
       navigate('/projects');
     } catch (err: any) {
       const msg = err?.message || '';
-      if (msg.includes('409')) {
+      const detail = extractApiErrorDetail(msg);
+      if (msg.includes('403')) {
+        setError(detail || '当前环境未开放注册，请联系管理员。');
+      } else if (msg.includes('409')) {
         setError('该用户名已被注册');
       } else if (msg.includes('401')) {
         setError('用户名或密码错误');
       } else if (msg.includes('422')) {
-        setError('输入格式不正确，请检查用户名和密码');
+        setError(detail || '输入格式不正确，请检查用户名和密码');
       } else {
-        setError(mode === 'login' ? '登录失败，请检查用户名和密码。' : '注册失败，请稍后重试。');
+        setError(detail || (mode === 'login' ? '登录失败，请检查用户名和密码。' : '注册失败，请稍后重试。'));
       }
     } finally {
       setLoading(false);
@@ -135,8 +159,10 @@ export default function LoginPage() {
         <div className="login-switch">
           {isRegister ? (
             <span>已有账号？<button type="button" className="link-btn" onClick={switchMode}>去登录</button></span>
-          ) : (
+          ) : allowRegister ? (
             <span>没有账号？<button type="button" className="link-btn" onClick={switchMode}>注册新用户</button></span>
+          ) : (
+            <span>当前环境未开放自助注册</span>
           )}
         </div>
       </div>

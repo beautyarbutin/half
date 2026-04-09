@@ -4,6 +4,29 @@ interface RequestOptions extends RequestInit {
   signal?: AbortSignal;
 }
 
+export function extractApiErrorDetail(message: string): string | null {
+  const match = message.match(/^API error \d+:\s*(.*)$/s);
+  if (!match) {
+    return null;
+  }
+
+  const rawBody = match[1]?.trim();
+  if (!rawBody) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(rawBody);
+    if (typeof parsed?.detail === 'string' && parsed.detail.trim()) {
+      return parsed.detail.trim();
+    }
+  } catch {
+    // Ignore JSON parse failures and fall back to raw text.
+  }
+
+  return rawBody;
+}
+
 async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
   const token = localStorage.getItem('token');
   const headers: Record<string, string> = {

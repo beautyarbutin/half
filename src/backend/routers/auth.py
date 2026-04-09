@@ -62,6 +62,15 @@ class UserResponse(BaseModel):
         from_attributes = True
 
 
+class AuthConfigResponse(BaseModel):
+    allow_register: bool
+
+
+@router.get("/config", response_model=AuthConfigResponse)
+def get_auth_config():
+    return AuthConfigResponse(allow_register=app_settings.ALLOW_REGISTER)
+
+
 @router.post("/register", response_model=LoginResponse)
 def register(body: RegisterRequest, db: Session = Depends(get_db)):
     if not app_settings.ALLOW_REGISTER:

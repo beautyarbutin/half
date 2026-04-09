@@ -8,6 +8,7 @@ services:
     environment:
       - HALF_ADMIN_PASSWORD=${HALF_ADMIN_PASSWORD:-example-insecure-password-placeholder}
       - HALF_SECRET_KEY=${HALF_SECRET_KEY:-example-insecure-secret-placeholder}
+      - HALF_ALLOW_REGISTER=${HALF_ALLOW_REGISTER:-true}
       - HALF_WORKSPACE_ROOT=/workspace
     volumes:
       - backend-data:/app/data
