@@ -7,6 +7,7 @@ import StatusBadge from '../components/StatusBadge';
 import ModelBadge from '../components/ModelBadge';
 import { Agent, Project, Task } from '../types';
 import { getNextStepAction, getNextStepText } from '../contracts';
+import { formatDateTime } from '../utils/datetime';
 
 interface PredecessorStatus {
   task_id: number;
@@ -20,13 +21,6 @@ interface PredecessorStatus {
 
 interface TaskWithReadiness extends Task {
   readiness?: PredecessorStatus;
-}
-
-function formatDateTime(value: string | null | undefined) {
-  if (!value) {
-    return '-';
-  }
-  return new Date(value).toLocaleString('zh-CN');
 }
 
 function getTaskTiming(task: Task) {
@@ -113,6 +107,7 @@ export default function ProjectDetailPage() {
     readiness: readinessMap.get(task.id),
   }));
   const selectedAgents = agents.filter((agent) => project.agent_ids?.includes(agent.id));
+  const assignmentMap = new Map((project.agent_assignments || []).map((assignment) => [assignment.id, assignment.co_located]));
   const availableAgents = selectedAgents.filter((agent) => agent.availability_status === 'available');
   const runningTasks = tasksWithReadiness.filter((task) => task.status === 'running');
   const attentionTasks = tasksWithReadiness.filter((task) => task.status === 'needs_attention');
@@ -327,7 +322,7 @@ export default function ProjectDetailPage() {
                   {agent.capability || '未填写能力说明'}
                 </p>
                 <div className="project-console-agent-footer">
-                  <span>机器标识：{agent.machine_label || '-'}</span>
+                  <span>同服务器：{assignmentMap.get(agent.id) ? '是' : '否'}</span>
                   <span>订阅到期：{formatDateTime(agent.subscription_expires_at)}</span>
                 </div>
               </div>

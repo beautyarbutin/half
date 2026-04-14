@@ -10,6 +10,7 @@ from access import get_owned_project, get_owned_task
 from database import get_db
 from models import Project, Task, TaskEvent, User
 from auth import get_current_user
+from schemas import UtcDatetimeModel
 from services.path_service import ExpectedOutputPathError, normalize_expected_output_path
 from services.prompt_service import generate_task_prompt
 from services import git_service
@@ -17,7 +18,7 @@ from services import git_service
 router = APIRouter(tags=["tasks"])
 
 
-class TaskResponse(BaseModel):
+class TaskResponse(UtcDatetimeModel):
     id: int
     project_id: int
     plan_id: int
@@ -53,6 +54,7 @@ class TaskUpdateRequest(BaseModel):
     task_name: str
     description: str = ""
     expected_output_path: str = ""
+    timeout_minutes: Optional[int] = None
 
 
 class TaskDispatchRequest(BaseModel):
@@ -107,12 +109,18 @@ def update_task(
     task_name = body.task_name.strip()
     if not task_name:
         raise HTTPException(status_code=400, detail="task_name is required")
+    timeout_minutes = body.timeout_minutes if body.timeout_minutes is not None else task.timeout_minutes
+    if timeout_minutes is None:
+        timeout_minutes = 10
+    if timeout_minutes < 1 or timeout_minutes > 120:
+        raise HTTPException(status_code=400, detail="timeout_minutes must be 1-120 minutes")
 
     now = datetime.now(timezone.utc)
     project = db.query(Project).filter(Project.id == task.project_id).first()
     collab = (project.collaboration_dir or "").strip("/") if project else ""
     task.task_name = task_name
     task.description = body.description
+    task.timeout_minutes = timeout_minutes
     try:
         task.expected_output_path = normalize_expected_output_path(
             body.expected_output_path,

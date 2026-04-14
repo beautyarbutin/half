@@ -34,7 +34,7 @@ class Agent(Base):
     model_name = Column(Text)
     models_json = Column(Text, default="[]")
     capability = Column(Text)
-    machine_label = Column(Text)
+    co_located = Column(Boolean, default=False)
     is_active = Column(Boolean, default=True)
     availability_status = Column(Text, default="unknown")  # online/quota_exhausted/expired/unknown
     subscription_expires_at = Column(DateTime, nullable=True)
@@ -56,7 +56,7 @@ class GlobalSetting(Base):
     __tablename__ = "global_settings"
 
     id = Column(Integer, primary_key=True, index=True)
-    key = Column(Text, unique=True, nullable=False)  # polling_interval_min, polling_interval_max, polling_start_delay_minutes, polling_start_delay_seconds
+    key = Column(Text, unique=True, nullable=False)
     value = Column(Text, nullable=False)  # JSON-serialized value
     description = Column(Text)
     created_at = Column(DateTime, default=utcnow)
@@ -72,11 +72,13 @@ class Project(Base):
     git_repo_url = Column(Text)
     collaboration_dir = Column(Text)
     status = Column(Text, default="draft")  # draft/planning/executing/completed/abandoned
-    agent_ids_json = Column(Text, default="[]")  # JSON array of agent IDs participating in project
+    agent_ids_json = Column(Text, default="[]")  # JSON array of {id, co_located} agent assignments
     polling_interval_min = Column(Integer, nullable=True)  # seconds, NULL means use global default
     polling_interval_max = Column(Integer, nullable=True)  # seconds, NULL means use global default
     polling_start_delay_minutes = Column(Integer, nullable=True)  # NULL means use global default
     polling_start_delay_seconds = Column(Integer, nullable=True)  # NULL means use global default
+    task_timeout_minutes = Column(Integer, nullable=True)
+    planning_mode = Column(Text, default="balanced")
     created_by = Column(Integer, ForeignKey("users.id"))
     created_at = Column(DateTime, default=utcnow)
     updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
@@ -123,7 +125,7 @@ class Task(Base):
     result_file_path = Column(Text)
     usage_file_path = Column(Text)
     last_error = Column(Text)
-    timeout_minutes = Column(Integer, default=10)
+    timeout_minutes = Column(Integer, nullable=True)
     dispatched_at = Column(DateTime, nullable=True)
     completed_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=utcnow)

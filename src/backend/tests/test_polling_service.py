@@ -14,7 +14,7 @@ if str(BACKEND_DIR) not in sys.path:
 from database import Base
 from models import Project, Task, ProjectPlan, TaskEvent
 from services.git_service import RepoSyncStatus
-from services.polling_service import _task_usage_path, poll_project
+from services.polling_service import _task_usage_path, get_effective_task_timeout_minutes, poll_project
 
 
 class PollingServiceTests(unittest.TestCase):
@@ -39,6 +39,7 @@ class PollingServiceTests(unittest.TestCase):
             git_repo_url="git@github.com:example-org/example-repo.git",
             collaboration_dir="outputs/proj-7-7b145d",
             status="executing",
+            task_timeout_minutes=20,
         )
         plan = ProjectPlan(
             id=8,
@@ -61,6 +62,29 @@ class PollingServiceTests(unittest.TestCase):
         db.refresh(project)
         db.refresh(task)
         return project, task
+
+    def _seed_running_plan(self, *, dispatched_minutes_ago: int) -> tuple[Project, ProjectPlan]:
+        db = self.SessionLocal()
+        self.addCleanup(db.close)
+
+        project = Project(
+            id=37,
+            name="Plan Polling Demo",
+            git_repo_url="git@github.com:example-org/example-repo.git",
+            collaboration_dir="outputs/proj-37-plan",
+            status="planning",
+        )
+        plan = ProjectPlan(
+            id=38,
+            project_id=37,
+            status="running",
+            dispatched_at=datetime.now(timezone.utc) - timedelta(minutes=dispatched_minutes_ago),
+        )
+        db.add_all([project, plan])
+        db.commit()
+        db.refresh(project)
+        db.refresh(plan)
+        return project, plan
 
     def test_poll_project_marks_markdown_output_as_completed_when_file_exists(self):
         project, task = self._seed_running_task("outputs/proj-7-7b145d/TASK-001/requirements.md")
@@ -100,6 +124,62 @@ class PollingServiceTests(unittest.TestCase):
         self.assertEqual(refreshed.status, "needs_attention")
         self.assertIsNone(refreshed.result_file_path)
         self.assertIn("Timeout: result not found", refreshed.last_error)
+
+    def test_poll_project_uses_task_timeout_before_timing_out(self):
+        project, task = self._seed_running_task(
+            "outputs/proj-7-7b145d/TASK-001/result.json",
+            dispatched_minutes_ago=11,
+        )
+        db = self.SessionLocal()
+        stored = db.query(Task).filter(Task.id == task.id).first()
+        stored.timeout_minutes = 15
+        db.commit()
+        db.close()
+
+        with patch(
+            "services.polling_service.git_service.ensure_repo_sync",
+            return_value=RepoSyncStatus(repo_dir="/tmp/repo", fetched=True, pulled=True, remote_ready=True),
+        ), patch(
+            "services.polling_service.git_service.file_exists",
+            return_value=False,
+        ):
+            poll_project(self.SessionLocal(), project)
+
+        verify_db = self.SessionLocal()
+        self.addCleanup(verify_db.close)
+        refreshed = verify_db.query(Task).filter(Task.id == task.id).first()
+        self.assertEqual(refreshed.status, "running")
+        self.assertIsNone(refreshed.last_error)
+
+    def test_effective_timeout_falls_back_from_task_to_project_to_global(self):
+        db = self.SessionLocal()
+        self.addCleanup(db.close)
+        project = Project(
+            id=27,
+            name="Timeout Project",
+            task_timeout_minutes=33,
+        )
+        task = Task(
+            id=28,
+            project_id=27,
+            plan_id=1,
+            task_code="TASK-028",
+            task_name="Timeout",
+            timeout_minutes=None,
+        )
+        db.add_all([project, task])
+        db.commit()
+
+        self.assertEqual(get_effective_task_timeout_minutes(db, project, task), 33)
+
+        task.timeout_minutes = 44
+        db.commit()
+        self.assertEqual(get_effective_task_timeout_minutes(db, project, task), 44)
+
+        project.task_timeout_minutes = None
+        task.timeout_minutes = None
+        db.commit()
+        self.assertEqual(get_effective_task_timeout_minutes(db, project, task), 10)
 
     def test_poll_project_ignores_invalid_expected_output_path_and_uses_fixed_result_path(self):
         project, task = self._seed_running_task("outputs/proj-7-7b145d/代码变更提交")
@@ -274,7 +354,39 @@ class PollingServiceTests(unittest.TestCase):
         self.assertIn("Git sync failed", refreshed.last_error)
         self.assertNotIn("Timeout: result not found", refreshed.last_error)
 
-    def test_poll_project_records_git_sync_warning_and_keeps_running(self):
+    def test_poll_project_logs_git_sync_warning_without_recording_error(self):
+        project, task = self._seed_running_task(
+            "outputs/proj-7-7b145d/TASK-001/result.md",
+            dispatched_minutes_ago=1,
+        )
+
+        with patch(
+            "services.polling_service.git_service.ensure_repo_sync",
+            return_value=RepoSyncStatus(
+                repo_dir="/tmp/repo",
+                fetched=True,
+                pulled=False,
+                remote_ready=True,
+                warnings=["git pull --ff-only failed: working tree contains unstaged changes"],
+            ),
+        ), patch(
+            "services.polling_service.git_service.file_exists",
+            return_value=False,
+        ):
+            poll_project(self.SessionLocal(), project)
+
+        verify_db = self.SessionLocal()
+        self.addCleanup(verify_db.close)
+        refreshed = verify_db.query(Task).filter(Task.id == task.id).first()
+        error_events = verify_db.query(TaskEvent).filter(
+            TaskEvent.task_id == task.id,
+            TaskEvent.event_type == "error",
+        ).all()
+        self.assertEqual(refreshed.status, "running")
+        self.assertIsNone(refreshed.last_error)
+        self.assertEqual(error_events, [])
+
+    def test_poll_project_git_sync_warning_does_not_block_timeout(self):
         project, task = self._seed_running_task("outputs/proj-7-7b145d/TASK-001/result.md")
 
         with patch(
@@ -295,9 +407,68 @@ class PollingServiceTests(unittest.TestCase):
         verify_db = self.SessionLocal()
         self.addCleanup(verify_db.close)
         refreshed = verify_db.query(Task).filter(Task.id == task.id).first()
+        error_events = verify_db.query(TaskEvent).filter(
+            TaskEvent.task_id == task.id,
+            TaskEvent.event_type == "error",
+        ).all()
+        timeout_events = verify_db.query(TaskEvent).filter(
+            TaskEvent.task_id == task.id,
+            TaskEvent.event_type == "timeout",
+        ).all()
+        self.assertEqual(refreshed.status, "needs_attention")
+        self.assertIn("Timeout: result not found", refreshed.last_error)
+        self.assertNotIn("Git sync warning", refreshed.last_error)
+        self.assertEqual(error_events, [])
+        self.assertEqual(len(timeout_events), 1)
+
+    def test_poll_project_plan_git_sync_warning_without_recording_error(self):
+        project, plan = self._seed_running_plan(dispatched_minutes_ago=1)
+
+        with patch(
+            "services.polling_service.git_service.ensure_repo_sync",
+            return_value=RepoSyncStatus(
+                repo_dir="/tmp/repo",
+                fetched=True,
+                pulled=False,
+                remote_ready=True,
+                warnings=["git pull --ff-only failed: working tree contains unstaged changes"],
+            ),
+        ), patch(
+            "services.polling_service.git_service.read_json",
+            return_value=None,
+        ):
+            poll_project(self.SessionLocal(), project)
+
+        verify_db = self.SessionLocal()
+        self.addCleanup(verify_db.close)
+        refreshed = verify_db.query(ProjectPlan).filter(ProjectPlan.id == plan.id).first()
         self.assertEqual(refreshed.status, "running")
-        self.assertIn("Git sync warning", refreshed.last_error)
-        self.assertNotIn("Timeout: result not found", refreshed.last_error)
+        self.assertIsNone(refreshed.last_error)
+
+    def test_poll_project_plan_git_sync_warning_does_not_block_timeout(self):
+        project, plan = self._seed_running_plan(dispatched_minutes_ago=31)
+
+        with patch(
+            "services.polling_service.git_service.ensure_repo_sync",
+            return_value=RepoSyncStatus(
+                repo_dir="/tmp/repo",
+                fetched=True,
+                pulled=False,
+                remote_ready=True,
+                warnings=["git pull --ff-only failed: working tree contains unstaged changes"],
+            ),
+        ), patch(
+            "services.polling_service.git_service.read_json",
+            return_value=None,
+        ):
+            poll_project(self.SessionLocal(), project)
+
+        verify_db = self.SessionLocal()
+        self.addCleanup(verify_db.close)
+        refreshed = verify_db.query(ProjectPlan).filter(ProjectPlan.id == plan.id).first()
+        self.assertEqual(refreshed.status, "needs_attention")
+        self.assertIn("Plan JSON not found", refreshed.last_error)
+        self.assertNotIn("Git sync warning", refreshed.last_error)
 
 
 if __name__ == "__main__":

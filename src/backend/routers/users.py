@@ -9,12 +9,13 @@ from sqlalchemy.orm import Session
 from auth import require_admin
 from database import get_db
 from models import AuditLog, User
+from schemas import UtcDatetimeModel
 
 router = APIRouter(prefix="/api/admin/users", tags=["admin-users"])
 audit_router = APIRouter(prefix="/api/admin", tags=["admin-audit-logs"])
 
 
-class AdminUserResponse(BaseModel):
+class AdminUserResponse(UtcDatetimeModel):
     id: int
     username: str
     role: str
@@ -35,7 +36,7 @@ class UserStatusUpdateRequest(BaseModel):
     status: Literal["active", "frozen"]
 
 
-class AuditLogResponse(BaseModel):
+class AuditLogResponse(UtcDatetimeModel):
     id: int
     operator_id: int
     operator_username: str | None

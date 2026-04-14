@@ -4,6 +4,7 @@ import { api } from '../api/client';
 import { copyText, getPlanIdToFinalize } from '../contracts';
 import { Agent, Plan, Project } from '../types';
 import { getAgentModels } from '../utils/agents';
+import { getPlanningModeMeta } from '../utils/planningMode';
 
 function formatDuration(seconds: number): string {
   const safeSeconds = Math.max(0, seconds);
@@ -92,6 +93,7 @@ export default function PlanPage() {
 
   const latestPlan = useMemo(() => [...plans].reverse()[0] || null, [plans]);
   const statusMeta = getStatusMeta(latestPlan);
+  const planningModeMeta = getPlanningModeMeta(project?.planning_mode);
 
   useEffect(() => {
     if (!latestPlan || latestPlan.status !== 'running') {
@@ -176,25 +178,12 @@ export default function PlanPage() {
     });
   }
 
-  async function handleSaveBrief() {
-    setActionLoading('brief');
-    setError('');
-    try {
-      const updatedProject = await api.put<Project>(`/api/projects/${id}`, { goal: planningBrief });
-      setProject(updatedProject);
-    } catch (err) {
-      setError(`保存任务介绍失败：${err}`);
-    } finally {
-      setActionLoading('');
-    }
-  }
-
   async function handleGeneratePrompt() {
     setActionLoading('generate');
     setError('');
     try {
       if (!planningBrief.trim()) {
-        throw new Error('请先填写并确认任务介绍。');
+        throw new Error('请先填写任务介绍。');
       }
       if (selectedAgentIds.length === 0) {
         throw new Error('请至少勾选 1 个参与规划的 Agent。');
@@ -334,11 +323,8 @@ export default function PlanPage() {
             <div className="plan-card-header">
               <div>
                 <h3>1. 任务介绍</h3>
-                <p>先确认这次规划的目标、约束和验收口径。</p>
+                <p>用于生成规划 Prompt。点击“生成 Prompt”时会自动保存当前内容。</p>
               </div>
-              <button className="btn btn-secondary" onClick={handleSaveBrief} disabled={actionLoading === 'brief'}>
-                {actionLoading === 'brief' ? '保存中...' : '确认任务介绍'}
-              </button>
             </div>
             <textarea
               value={planningBrief}
@@ -347,6 +333,7 @@ export default function PlanPage() {
               className="import-textarea"
               placeholder="请填写本次项目规划的任务介绍、目标、边界和验收标准。"
             />
+            <div className="helper-text">任务介绍将在生成 Prompt 时自动保存。</div>
           </section>
 
           <section className="plan-card">
@@ -437,6 +424,15 @@ export default function PlanPage() {
         </div>
 
         <aside className="plan-side-column">
+
+          <section className="plan-card">
+            <h3>当前模式</h3>
+            <div className="plan-mode-summary">
+              <strong>{planningModeMeta.label}</strong>
+              <p>{planningModeMeta.description}</p>
+            </div>
+          </section>
+
           <section className="plan-card">
             <h3>当前说明</h3>
             <ul className="plan-note-list">

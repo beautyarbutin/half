@@ -4,6 +4,23 @@ import re
 from sqlalchemy.orm import Session
 
 from models import Agent, Project, Task
+from services.project_agents import parse_agent_assignments_json
+from services.prompt_settings import normalize_plan_co_location_guidance
+
+PLAN_MODE_GUIDANCE = {
+    "balanced": """## 规划模式策略
+当前模式：均衡模式。为每个 task 选择效果最好的 agent/模型，同时避免不必要的重复任务和评审链路。分配 task 时必须综合考虑 agent 的能力匹配度，让规划结果在效果、成本和速度之间保持稳健平衡。""",
+    "quality": """## 规划模式策略
+当前模式：效果优先。分配 task 时只考虑能力最强、效果最好的 agent/模型，不以成本和速度为主要约束。对关键任务可安排多个 agent 分别执行同一目标，但必须拆为多个并行候选 task，再增加评审、对比或合并 task 来优选最佳结果；不要让单个 task 同时绑定多个 assignee。对重要产出可安排独立 agent 进行评审。""",
+    "cost_effective": """## 规划模式策略
+当前模式：性价比高。用户手动指定的模型优先级最高；对未手动指定模型的 agent，在能力满足要求的前提下，优先选择成本较低或更节省用量的模型来执行 task；仅在任务复杂度高、风险高或能力匹配不足时使用更强模型。分配 task 时优先考虑性价比高的 agent/模型组合。""",
+    "speed": """## 规划模式策略
+当前模式：速度优先。在确保效果理想的前提下，尽量减少任务间的串行依赖，最大化可并行执行的 task 数量，缩短关键路径。避免引入非必要评审任务。分配 task 时优先选择响应更快、更适合快速完成的 agent/模型；关键路径上的任务尤其如此。""",
+}
+
+
+def get_plan_mode_guidance(planning_mode: str | None) -> str:
+    return PLAN_MODE_GUIDANCE.get((planning_mode or "balanced").strip(), PLAN_MODE_GUIDANCE["balanced"])
 
 
 def generate_plan_prompt(
@@ -12,12 +29,24 @@ def generate_plan_prompt(
     plan_path: str,
     usage_path: str | None = None,  # kept for API compat, no longer used
     selected_agent_models: dict[int, str | None] | None = None,
+    co_location_guidance: str | None = None,
 ) -> tuple[str, dict[int, str | None]]:
-    resolved_models = resolve_selected_agent_models(project.goal or "", selected_agents, selected_agent_models or {})
+    resolved_models = resolve_selected_agent_models(
+        project.goal or "",
+        selected_agents,
+        selected_agent_models or {},
+        getattr(project, "planning_mode", None),
+    )
+    assignment_map = {
+        int(item["id"]): bool(item["co_located"])
+        for item in parse_agent_assignments_json(project.agent_ids_json)
+    }
     selected_lines = "\n".join(
-        _format_agent_line(agent, resolved_models.get(agent.id))
+        _format_agent_line(agent, resolved_models.get(agent.id), assignment_map.get(agent.id, bool(agent.co_located)))
         for agent in selected_agents
     ) or "- 未指定参与 Agent"
+    co_location_guidance_text = normalize_plan_co_location_guidance(co_location_guidance)
+    plan_mode_guidance_text = get_plan_mode_guidance(getattr(project, "planning_mode", None))
 
     prompt = f"""你是项目 [{project.name}] 的执行 Agent。
 
@@ -32,6 +61,10 @@ def generate_plan_prompt(
 {selected_lines}
 
 请根据参与 Agent 的数量、能力特点和分工边界来拆分子任务，尽量让每个子任务的 assignee 都来自上述列表。
+
+{plan_mode_guidance_text}
+
+{co_location_guidance_text}
 
 ## 输出要求
 请输出结构化工作计划，格式为 JSON，包含以下字段：
@@ -92,7 +125,14 @@ def resolve_selected_agent_models(
     requirement_text: str,
     selected_agents: list[Agent],
     preferred_models: dict[int, str | None],
+    planning_mode: str | None = None,
 ) -> dict[int, str | None]:
+    mode_requirement_hints = {
+        "quality": " 效果最好 能力最强 复杂规划 深度分析 高质量",
+        "cost_effective": " 性价比 低成本 成本较低 节省用量 轻量",
+        "speed": " 速度快 快速 响应快 高并发",
+    }
+    effective_requirement_text = requirement_text + mode_requirement_hints.get((planning_mode or "balanced").strip(), "")
     resolved: dict[int, str | None] = {}
     for agent in selected_agents:
         models = _parse_agent_models(agent)
@@ -108,7 +148,7 @@ def resolve_selected_agent_models(
         best_model = max(
             models,
             key=lambda model: (
-                _score_model_fit(requirement_text, model.get("capability")),
+                _score_model_fit(effective_requirement_text, model.get("capability")),
                 1 if model.get("capability") else 0,
             ),
         )
@@ -116,16 +156,17 @@ def resolve_selected_agent_models(
     return resolved
 
 
-def _format_agent_line(agent: Agent, selected_model_name: str | None) -> str:
+def _format_agent_line(agent: Agent, selected_model_name: str | None, co_located: bool = False) -> str:
+    co_located_text = "同服务器：是" if co_located else "同服务器：否"
     models = _parse_agent_models(agent)
     chosen = next((model for model in models if model["model_name"] == selected_model_name), None)
     if chosen:
         capability_text = f"，能力：{chosen['capability']}" if chosen.get("capability") else ""
-        return f"- {agent.name} ({agent.slug}, {agent.agent_type}, 使用模型：{chosen['model_name']}{capability_text})"
+        return f"- {agent.name} ({agent.slug}, {agent.agent_type}, 使用模型：{chosen['model_name']}{capability_text}，{co_located_text})"
     if models:
         model_names = " / ".join(model["model_name"] for model in models)
-        return f"- {agent.name} ({agent.slug}, {agent.agent_type}, 可用模型：{model_names})"
-    return f"- {agent.name} ({agent.slug}, {agent.agent_type})"
+        return f"- {agent.name} ({agent.slug}, {agent.agent_type}, 可用模型：{model_names}，{co_located_text})"
+    return f"- {agent.name} ({agent.slug}, {agent.agent_type}, {co_located_text})"
 
 
 def generate_task_prompt(

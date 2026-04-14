@@ -35,6 +35,7 @@ class PlanFinalizeValidationTests(unittest.TestCase):
             collaboration_dir="outputs/proj-20",
             status="planning",
             created_by=self.user.id,
+            task_timeout_minutes=42,
         )
         plan = ProjectPlan(
             id=30,
@@ -67,6 +68,14 @@ class PlanFinalizeValidationTests(unittest.TestCase):
         _project, plan = self._seed_plan("outputs/proj-20/result.json，请按以下格式写入")
         response = finalize_plan(20, FinalizeRequest(plan_id=plan.id), self.db, self.user)
         self.assertEqual(response["tasks_created"], 1)
+
+    def test_finalize_plan_writes_project_task_timeout_to_tasks(self):
+        _project, plan = self._seed_plan("outputs/proj-20/result.json")
+        response = finalize_plan(20, FinalizeRequest(plan_id=plan.id), self.db, self.user)
+        self.assertEqual(response["tasks_created"], 1)
+        from models import Task
+        task = self.db.query(Task).filter(Task.project_id == 20).one()
+        self.assertEqual(task.timeout_minutes, 42)
 
 
 if __name__ == "__main__":

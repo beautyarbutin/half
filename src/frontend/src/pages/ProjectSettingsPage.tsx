@@ -10,12 +10,19 @@ interface PollingSettings {
   polling_interval_max: number;
   polling_start_delay_minutes: number;
   polling_start_delay_seconds: number;
+  task_timeout_minutes: number;
+}
+
+interface PromptSettings {
+  co_location_guidance: string;
+  default_co_location_guidance: string;
 }
 
 export default function ProjectSettingsPage() {
   const navigate = useNavigate();
   const isAdmin = isAdminUser();
   const [settings, setSettings] = useState<PollingSettings | null>(null);
+  const [promptSettings, setPromptSettings] = useState<PromptSettings | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
@@ -31,8 +38,14 @@ export default function ProjectSettingsPage() {
 
   function fetchSettings() {
     setLoading(true);
-    api.get<PollingSettings>('/api/settings/polling')
-      .then(setSettings)
+    Promise.all([
+      api.get<PollingSettings>('/api/settings/polling'),
+      api.get<PromptSettings>('/api/settings/prompt'),
+    ])
+      .then(([polling, prompt]) => {
+        setSettings(polling);
+        setPromptSettings(prompt);
+      })
       .catch(() => setError('加载设置失败'))
       .finally(() => setLoading(false));
   }
@@ -53,11 +66,17 @@ export default function ProjectSettingsPage() {
     if (s.polling_start_delay_seconds < 0 || s.polling_start_delay_seconds > 59) {
       return '启动延迟秒数必须在 0-59 之间';
     }
+    if (s.task_timeout_minutes < 1 || s.task_timeout_minutes > 120) {
+      return 'Task 超时时间必须在 1-120 分钟之间';
+    }
+    if (!promptSettings?.co_location_guidance.trim()) {
+      return '同机分配引导不能为空';
+    }
     return null;
   }
 
   async function handleSave() {
-    if (!settings) return;
+    if (!settings || !promptSettings) return;
 
     const validationError = validateSettings(settings);
     if (validationError) {
@@ -71,6 +90,10 @@ export default function ProjectSettingsPage() {
 
     try {
       await api.put('/api/settings/polling', settings);
+      const savedPrompt = await api.put<PromptSettings>('/api/settings/prompt', {
+        co_location_guidance: promptSettings.co_location_guidance,
+      });
+      setPromptSettings(savedPrompt);
       setSuccess('设置保存成功');
       setTimeout(() => setSuccess(''), 3000);
     } catch (err) {
@@ -84,7 +107,7 @@ export default function ProjectSettingsPage() {
     return <div className="page-loading">正在加载设置...</div>;
   }
 
-  if (!settings) {
+  if (!settings || !promptSettings) {
     return (
       <div className="page">
         <PageHeader title="项目参数设置" />
@@ -177,6 +200,69 @@ export default function ProjectSettingsPage() {
               }
             />
           </div>
+        </div>
+      </SectionCard>
+
+      <SectionCard title="默认 Task 超时时间">
+        <p className="section-description">
+          Task 运行超过此时间后，系统将标记为需要关注状态。
+        </p>
+        <div className="form-row">
+          <div className="form-group">
+            <label htmlFor="task-timeout">超时时间（分钟）</label>
+            <input
+              id="task-timeout"
+              type="number"
+              min="1"
+              max="120"
+              value={settings.task_timeout_minutes}
+              onChange={(e) =>
+                setSettings({
+                  ...settings,
+                  task_timeout_minutes: parseInt(e.target.value) || 10,
+                })
+              }
+            />
+            <div className="helper-text">范围：1-120 分钟</div>
+          </div>
+        </div>
+      </SectionCard>
+
+      <SectionCard title="Prompt 设置">
+        <p className="section-description">
+          配置规划 Prompt 中关于同服务器 Agent 分配策略的引导文案。该内容会加入每次新生成的规划 Prompt。
+        </p>
+        <div className="form-group">
+          <label htmlFor="co-location-guidance">同机分配引导</label>
+          <textarea
+            id="co-location-guidance"
+            rows={10}
+            value={promptSettings.co_location_guidance}
+            onChange={(e) =>
+              setPromptSettings({
+                ...promptSettings,
+                co_location_guidance: e.target.value,
+              })
+            }
+          />
+          <div className="helper-text">
+            不能为空。保存后会作为纯文本加入规划 Prompt，位于参与 Agent 说明之后、输出要求之前。
+          </div>
+        </div>
+        <div className="prompt-settings-actions">
+          <button
+            type="button"
+            className="btn btn-secondary"
+            onClick={() =>
+              setPromptSettings({
+                ...promptSettings,
+                co_location_guidance: promptSettings.default_co_location_guidance,
+              })
+            }
+            disabled={saving}
+          >
+            恢复默认值
+          </button>
         </div>
       </SectionCard>
 

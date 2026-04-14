@@ -4,17 +4,38 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from access import get_owned_project
 from database import get_db
 from models import Agent, Project, ProjectPlan, Task, TaskEvent, User
 from auth import get_current_user
+from schemas import UtcDatetimeModel
 from services.polling_config_service import get_global_polling_settings
 from services.git_service import validate_git_url
+from services.project_agents import (
+    agent_ids_from_assignments_json,
+    parse_agent_assignments_json,
+    serialize_agent_assignments,
+)
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
+
+DEFAULT_PLANNING_MODE = "balanced"
+VALID_PLANNING_MODES = {"balanced", "quality", "cost_effective", "speed"}
+
+
+def _normalize_planning_mode(value: Optional[str]) -> str:
+    normalized = (value or DEFAULT_PLANNING_MODE).strip()
+    if normalized not in VALID_PLANNING_MODES:
+        raise HTTPException(status_code=400, detail="Invalid planning_mode")
+    return normalized
+
+
+class AgentAssignment(BaseModel):
+    id: int
+    co_located: bool = False
 
 
 class ProjectCreate(BaseModel):
@@ -22,11 +43,14 @@ class ProjectCreate(BaseModel):
     goal: Optional[str] = None
     git_repo_url: Optional[str] = None
     collaboration_dir: Optional[str] = None
-    agent_ids: list[int] = []
+    agent_ids: list[int] = Field(default_factory=list)
+    agent_assignments: Optional[list[AgentAssignment]] = None
     polling_interval_min: Optional[int] = None  # seconds, None = use global default
     polling_interval_max: Optional[int] = None  # seconds, None = use global default
     polling_start_delay_minutes: Optional[int] = None  # None = use global default
     polling_start_delay_seconds: Optional[int] = None  # None = use global default
+    task_timeout_minutes: Optional[int] = None
+    planning_mode: str = DEFAULT_PLANNING_MODE
 
 
 class ProjectUpdate(BaseModel):
@@ -36,13 +60,16 @@ class ProjectUpdate(BaseModel):
     collaboration_dir: Optional[str] = None
     status: Optional[str] = None
     agent_ids: Optional[list[int]] = None
+    agent_assignments: Optional[list[AgentAssignment]] = None
     polling_interval_min: Optional[int] = None
     polling_interval_max: Optional[int] = None
     polling_start_delay_minutes: Optional[int] = None
     polling_start_delay_seconds: Optional[int] = None
+    task_timeout_minutes: Optional[int] = None
+    planning_mode: Optional[str] = None
 
 
-class ProjectResponse(BaseModel):
+class ProjectResponse(UtcDatetimeModel):
     id: int
     name: str
     goal: Optional[str]
@@ -57,6 +84,9 @@ class ProjectResponse(BaseModel):
     polling_interval_max: Optional[int]
     polling_start_delay_minutes: Optional[int]
     polling_start_delay_seconds: Optional[int]
+    task_timeout_minutes: Optional[int]
+    planning_mode: str
+    agent_assignments: list[AgentAssignment]
 
     class Config:
         from_attributes = True
@@ -69,12 +99,11 @@ class ProjectDetailResponse(ProjectResponse):
 
 
 def _project_agent_ids(project: Project) -> list[int]:
-    if not project.agent_ids_json:
-        return []
-    try:
-        return json.loads(project.agent_ids_json)
-    except json.JSONDecodeError:
-        return []
+    return agent_ids_from_assignments_json(project.agent_ids_json)
+
+
+def _project_agent_assignments(project: Project) -> list[AgentAssignment]:
+    return [AgentAssignment(**item) for item in parse_agent_assignments_json(project.agent_ids_json)]
 
 
 
@@ -90,10 +119,13 @@ def _build_project_response(project: Project, next_step: Optional[str] = None, t
         'created_at': project.created_at,
         'updated_at': project.updated_at,
         'agent_ids': _project_agent_ids(project),
+        'agent_assignments': _project_agent_assignments(project),
         'polling_interval_min': project.polling_interval_min,
         'polling_interval_max': project.polling_interval_max,
         'polling_start_delay_minutes': project.polling_start_delay_minutes,
         'polling_start_delay_seconds': project.polling_start_delay_seconds,
+        'task_timeout_minutes': project.task_timeout_minutes,
+        'planning_mode': _normalize_planning_mode(getattr(project, 'planning_mode', None)),
     }
     if next_step is not None and task_summary is not None:
         return ProjectDetailResponse(next_step=next_step, task_summary=task_summary, **payload)
@@ -102,6 +134,8 @@ def _build_project_response(project: Project, next_step: Optional[str] = None, t
 def _validate_owned_agent_ids(db: Session, agent_ids: list[int], user: User) -> list[int]:
     if not agent_ids:
         raise HTTPException(status_code=400, detail='At least one agent must be selected')
+    if len(set(agent_ids)) != len(agent_ids):
+        raise HTTPException(status_code=400, detail='Some agent_ids are duplicated')
     agents = db.query(Agent).filter(
         Agent.id.in_(agent_ids),
         Agent.created_by == user.id,
@@ -109,6 +143,42 @@ def _validate_owned_agent_ids(db: Session, agent_ids: list[int], user: User) -> 
     if len(agents) != len(agent_ids):
         raise HTTPException(status_code=400, detail='Some agent_ids are invalid')
     return agent_ids
+
+
+def _validate_owned_agent_assignments(
+    db: Session,
+    assignments: list[dict],
+    user: User,
+) -> list[dict[str, int | bool]]:
+    agent_ids = [int(item.get("id")) for item in assignments]
+    _validate_owned_agent_ids(db, agent_ids, user)
+    return [
+        {"id": int(item.get("id")), "co_located": bool(item.get("co_located", False))}
+        for item in assignments
+    ]
+
+
+def _agent_assignments_from_ids(db: Session, agent_ids: list[int], user: User) -> list[dict[str, int | bool]]:
+    valid_ids = _validate_owned_agent_ids(db, agent_ids, user)
+    agents = db.query(Agent).filter(
+        Agent.id.in_(valid_ids),
+        Agent.created_by == user.id,
+    ).all()
+    agents_by_id = {agent.id: agent for agent in agents}
+    return [
+        {"id": agent_id, "co_located": bool(agents_by_id[agent_id].co_located)}
+        for agent_id in valid_ids
+    ]
+
+
+def _project_assignments_from_body(db: Session, body: ProjectCreate | ProjectUpdate, user: User) -> list[dict[str, int | bool]]:
+    if body.agent_assignments is not None:
+        return _validate_owned_agent_assignments(
+            db,
+            [item.model_dump() for item in body.agent_assignments],
+            user,
+        )
+    return _agent_assignments_from_ids(db, body.agent_ids or [], user)
 
 
 
@@ -192,6 +262,7 @@ def _validate_polling_params(
     interval_max: Optional[int],
     delay_minutes: Optional[int],
     delay_seconds: Optional[int],
+    task_timeout_minutes: Optional[int] = None,
 ) -> None:
     """Validate polling configuration values. Raises HTTPException on invalid input."""
     if interval_min is not None:
@@ -212,6 +283,9 @@ def _validate_polling_params(
     if delay_seconds is not None:
         if delay_seconds < 0 or delay_seconds > 59:
             raise HTTPException(status_code=400, detail="polling_start_delay_seconds must be 0-59")
+    if task_timeout_minutes is not None:
+        if task_timeout_minutes < 1 or task_timeout_minutes > 120:
+            raise HTTPException(status_code=400, detail="task_timeout_minutes must be 1-120 minutes")
 
 
 def _resolve_polling_snapshot(
@@ -220,6 +294,7 @@ def _resolve_polling_snapshot(
     interval_max: Optional[int],
     delay_minutes: Optional[int],
     delay_seconds: Optional[int],
+    task_timeout_minutes: Optional[int],
 ) -> dict:
     """Resolve project-level polling values, snapshotting global defaults for any
     field the user did not explicitly provide. This guarantees that subsequent
@@ -239,6 +314,9 @@ def _resolve_polling_snapshot(
         "polling_start_delay_seconds": (
             delay_seconds if delay_seconds is not None else global_defaults["polling_start_delay_seconds"]
         ),
+        "task_timeout_minutes": (
+            task_timeout_minutes if task_timeout_minutes is not None else global_defaults["task_timeout_minutes"]
+        ),
     }
 
 
@@ -249,12 +327,13 @@ def create_project(body: ProjectCreate, db: Session = Depends(get_db), user: Use
             body.git_repo_url = validate_git_url(body.git_repo_url)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
-    agent_ids = _validate_owned_agent_ids(db, body.agent_ids, user)
+    agent_assignments = _project_assignments_from_body(db, body, user)
     _validate_polling_params(
         body.polling_interval_min,
         body.polling_interval_max,
         body.polling_start_delay_minutes,
         body.polling_start_delay_seconds,
+        body.task_timeout_minutes,
     )
     user_collab = _normalize_collab_dir_input(body.collaboration_dir)
     # Snapshot global defaults into project-level fields. After this, the
@@ -266,6 +345,7 @@ def create_project(body: ProjectCreate, db: Session = Depends(get_db), user: Use
         body.polling_interval_max,
         body.polling_start_delay_minutes,
         body.polling_start_delay_seconds,
+        body.task_timeout_minutes,
     )
     project = Project(
         name=body.name,
@@ -273,11 +353,13 @@ def create_project(body: ProjectCreate, db: Session = Depends(get_db), user: Use
         git_repo_url=body.git_repo_url,
         collaboration_dir=user_collab,  # may be None, will be defaulted after flush
         created_by=user.id,
-        agent_ids_json=json.dumps(agent_ids),
+        agent_ids_json=serialize_agent_assignments(agent_assignments),
         polling_interval_min=polling_snapshot["polling_interval_min"],
         polling_interval_max=polling_snapshot["polling_interval_max"],
         polling_start_delay_minutes=polling_snapshot["polling_start_delay_minutes"],
         polling_start_delay_seconds=polling_snapshot["polling_start_delay_seconds"],
+        task_timeout_minutes=polling_snapshot["task_timeout_minutes"],
+        planning_mode=_normalize_planning_mode(body.planning_mode),
     )
     if project.created_by is None:
         raise HTTPException(status_code=500, detail="created_by must not be None")
@@ -311,10 +393,21 @@ def update_project(project_id: int, body: ProjectUpdate, db: Session = Depends(g
             update_data['git_repo_url'] = validate_git_url(update_data['git_repo_url'])
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
-    if 'agent_ids' in update_data:
-        update_data['agent_ids_json'] = json.dumps(_validate_owned_agent_ids(db, update_data.pop('agent_ids'), user))
+    if 'agent_assignments' in update_data:
+        update_data.pop('agent_ids', None)
+        update_data['agent_ids_json'] = serialize_agent_assignments(
+            _validate_owned_agent_assignments(db, update_data.pop('agent_assignments'), user)
+        )
+    elif 'agent_ids' in update_data:
+        update_data['agent_ids_json'] = serialize_agent_assignments(
+            _agent_assignments_from_ids(db, update_data.pop('agent_ids'), user)
+        )
     if 'collaboration_dir' in update_data:
         update_data['collaboration_dir'] = _normalize_collab_dir_input(update_data['collaboration_dir'])
+    if update_data.get('task_timeout_minutes') is None and 'task_timeout_minutes' in update_data:
+        update_data['task_timeout_minutes'] = get_global_polling_settings(db)["task_timeout_minutes"]
+    if 'planning_mode' in update_data:
+        update_data['planning_mode'] = _normalize_planning_mode(update_data['planning_mode'])
     # Validate polling fields against the merged final state so cross-field
     # constraints (min <= max) are enforced even when only one is updated.
     merged_min = update_data.get('polling_interval_min', project.polling_interval_min)
@@ -325,7 +418,8 @@ def update_project(project_id: int, body: ProjectUpdate, db: Session = Depends(g
     merged_delay_seconds = update_data.get(
         'polling_start_delay_seconds', project.polling_start_delay_seconds
     )
-    _validate_polling_params(merged_min, merged_max, merged_delay_minutes, merged_delay_seconds)
+    merged_task_timeout = update_data.get('task_timeout_minutes', project.task_timeout_minutes)
+    _validate_polling_params(merged_min, merged_max, merged_delay_minutes, merged_delay_seconds, merged_task_timeout)
     for key, value in update_data.items():
         setattr(project, key, value)
     project.updated_at = datetime.now(timezone.utc)

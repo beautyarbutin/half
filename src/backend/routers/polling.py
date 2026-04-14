@@ -9,6 +9,7 @@ from models import Project, Task, TaskEvent, User
 from auth import get_current_user
 from services.polling_service import poll_project
 from services.polling_config_service import get_project_polling_settings
+from schemas import utc_isoformat
 
 router = APIRouter(prefix="/api/projects", tags=["polling"])
 
@@ -24,6 +25,7 @@ def get_polling_config(project_id: int, db: Session = Depends(get_db), user: Use
         "polling_interval_max": settings["polling_interval_max"],
         "polling_start_delay_minutes": settings["polling_start_delay_minutes"],
         "polling_start_delay_seconds": settings["polling_start_delay_seconds"],
+        "task_timeout_minutes": settings["task_timeout_minutes"],
     }
 
 
@@ -63,8 +65,8 @@ def project_summary(project_id: int, db: Session = Depends(get_db), user: User =
             "usage_file_path": t.usage_file_path,
             "last_error": t.last_error,
             "timeout_minutes": t.timeout_minutes,
-            "dispatched_at": t.dispatched_at.isoformat() if t.dispatched_at else None,
-            "completed_at": t.completed_at.isoformat() if t.completed_at else None,
+            "dispatched_at": utc_isoformat(t.dispatched_at),
+            "completed_at": utc_isoformat(t.completed_at),
         })
 
     summary = {
@@ -84,7 +86,7 @@ def project_summary(project_id: int, db: Session = Depends(get_db), user: User =
                 "task_id": event.task_id,
                 "event_type": event.event_type,
                 "detail": event.detail,
-                "created_at": event.created_at.isoformat() if event.created_at else None,
+                "created_at": utc_isoformat(event.created_at),
             }
             for event in events
         ],

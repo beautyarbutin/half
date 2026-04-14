@@ -10,6 +10,7 @@ from access import get_owned_agent, list_owned_agents
 from database import get_db
 from models import Agent, Project, Task, User, AgentTypeConfig, AgentTypeModelMap, ModelDefinition
 from auth import get_current_user
+from services.project_agents import agent_ids_from_assignments_json
 
 router = APIRouter(prefix="/api/agents", tags=["agents"])
 BEIJING_TZ = timezone(timedelta(hours=8))
@@ -26,7 +27,7 @@ class AgentCreate(BaseModel):
     model_name: Optional[str] = None
     capability: Optional[str] = None
     models: list[AgentModelConfig] = Field(default_factory=list)
-    machine_label: Optional[str] = None
+    co_located: bool = False
     is_active: bool = True
     availability_status: str = "unknown"
     subscription_expires_at: Optional[datetime] = None
@@ -43,7 +44,7 @@ class AgentUpdate(BaseModel):
     model_name: Optional[str] = None
     capability: Optional[str] = None
     models: Optional[list[AgentModelConfig]] = None
-    machine_label: Optional[str] = None
+    co_located: Optional[bool] = None
     is_active: Optional[bool] = None
     availability_status: Optional[str] = None
     subscription_expires_at: Optional[datetime] = None
@@ -70,7 +71,7 @@ class AgentResponse(BaseModel):
     model_name: Optional[str]
     models: list[AgentModelConfig] = Field(default_factory=list)
     capability: Optional[str]
-    machine_label: Optional[str]
+    co_located: bool
     is_active: bool
     availability_status: str
     display_order: int = 0
@@ -352,7 +353,7 @@ def _build_agent_response(agent: Agent) -> AgentResponse:
         model_name=agent.model_name,
         models=_parse_agent_models(agent),
         capability=agent.capability,
-        machine_label=agent.machine_label,
+        co_located=bool(agent.co_located),
         is_active=agent.is_active,
         availability_status=agent.availability_status,
         display_order=agent.display_order or 0,
@@ -545,7 +546,7 @@ def delete_agent(agent_id: int, db: Session = Depends(get_db), user: User = Depe
         raise HTTPException(status_code=400, detail="Agent 已关联任务，无法删除")
 
     for project in db.query(Project).filter(Project.created_by == user.id).all():
-        agent_ids = json.loads(project.agent_ids_json or "[]")
+        agent_ids = agent_ids_from_assignments_json(project.agent_ids_json)
         if agent_id in agent_ids:
             raise HTTPException(status_code=400, detail="Agent 已关联项目，无法删除")
 

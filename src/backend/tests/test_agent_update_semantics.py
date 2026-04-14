@@ -54,7 +54,7 @@ class AgentUpdateSemanticsTests(unittest.TestCase):
                 model_name="gpt-5.4",
                 models_json='[{"model_name":"gpt-5.4","capability":"原始能力"}]',
                 capability="原始能力",
-                machine_label="mac-mini",
+                co_located=False,
                 created_by=user.id,
             )
             db.add(agent)
@@ -86,15 +86,15 @@ class AgentUpdateSemanticsTests(unittest.TestCase):
             self.assertEqual(agent.capability, "更新后的能力")
             self.assertIn("gpt-5.4", agent.models_json or "")
 
-    def test_partial_machine_label_update_preserves_models_and_capability(self):
+    def test_partial_co_located_update_preserves_models_and_capability(self):
         response = self.client.put(
             "/api/agents/1",
-            json={"machine_label": "studio"},
+            json={"co_located": True},
             headers=self._headers(),
         )
         self.assertEqual(response.status_code, 200)
         payload = response.json()
-        self.assertEqual(payload["machine_label"], "studio")
+        self.assertEqual(payload["co_located"], True)
         self.assertEqual(payload["model_name"], "gpt-5.4")
         self.assertEqual(payload["capability"], "原始能力")
         self.assertEqual(payload["models"][0]["capability"], "原始能力")
@@ -131,7 +131,7 @@ class AgentUpdateSemanticsTests(unittest.TestCase):
         payload = response.json()
         self.assertEqual(payload["model_name"], "gpt-5.5")
         self.assertEqual(payload["capability"], "原始能力")
-        self.assertEqual(payload["machine_label"], "mac-mini")
+        self.assertEqual(payload["co_located"], False)
         self.assertEqual(payload["models"][0]["model_name"], "gpt-5.4")
         self.assertEqual(payload["models"][0]["capability"], "原始能力")
 

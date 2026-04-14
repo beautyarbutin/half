@@ -16,7 +16,7 @@ if str(BACKEND_DIR) not in sys.path:
 
 import database
 from auth import hash_password
-from models import Agent, Base, Project, ProjectPlan, Task, User
+from models import Agent, Base, GlobalSetting, Project, ProjectPlan, Task, User
 from routers import agents as agents_router
 from routers import auth as auth_router
 from routers import plans as plans_router
@@ -62,12 +62,14 @@ class ProjectIsolationTests(unittest.TestCase):
                 name="alice-agent",
                 slug="alice-agent",
                 agent_type="claude",
+                co_located=True,
                 created_by=alice.id,
             )
             bob_agent = Agent(
                 name="bob-agent",
                 slug="bob-agent",
                 agent_type="codex",
+                co_located=False,
                 created_by=bob.id,
             )
             db.add_all([alice_agent, bob_agent])
@@ -84,6 +86,7 @@ class ProjectIsolationTests(unittest.TestCase):
                 Project(name="alice-project", created_by=alice.id, agent_ids_json=f"[{alice_agent.id}]"),
                 Project(name="bob-project", created_by=bob.id, agent_ids_json=f"[{bob_agent.id}]"),
             ])
+            db.add(GlobalSetting(key="task_timeout_minutes", value="37"))
             db.flush()
             bob_project = db.query(Project).filter(Project.name == "bob-project").first()
             bob_plan = ProjectPlan(
@@ -142,10 +145,104 @@ class ProjectIsolationTests(unittest.TestCase):
         payload = response.json()
         self.assertEqual(len(payload), 1)
         self.assertEqual(payload[0]["name"], "alice-project")
+        self.assertEqual(payload[0]["agent_ids"], [1])
+        self.assertEqual(payload[0]["agent_assignments"], [{"id": 1, "co_located": False}])
+
+    def test_create_project_accepts_agent_assignments(self):
+        response = self.client.post(
+            "/api/projects",
+            json={
+                "name": "assigned-project",
+                "goal": "x",
+                "agent_assignments": [{"id": 1, "co_located": True}],
+            },
+            headers=self._login_headers("alice", "Alice123"),
+        )
+        self.assertEqual(response.status_code, 201)
+        payload = response.json()
+        self.assertEqual(payload["agent_ids"], [1])
+        self.assertEqual(payload["agent_assignments"], [{"id": 1, "co_located": True}])
+
+    def test_create_and_update_project_planning_mode(self):
+        headers = self._login_headers("alice", "Alice123")
+        response = self.client.post(
+            "/api/projects",
+            json={
+                "name": "mode-project",
+                "goal": "x",
+                "agent_ids": [1],
+                "planning_mode": "quality",
+            },
+            headers=headers,
+        )
+        self.assertEqual(response.status_code, 201)
+        project_id = response.json()["id"]
+        self.assertEqual(response.json()["planning_mode"], "quality")
+
+        response = self.client.put(
+            f"/api/projects/{project_id}",
+            json={"planning_mode": "speed"},
+            headers=headers,
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["planning_mode"], "speed")
+
+    def test_create_project_rejects_invalid_planning_mode(self):
+        response = self.client.post(
+            "/api/projects",
+            json={
+                "name": "invalid-mode-project",
+                "goal": "x",
+                "agent_ids": [1],
+                "planning_mode": "unknown",
+            },
+            headers=self._login_headers("alice", "Alice123"),
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_create_project_agent_ids_use_agent_default_co_located(self):
+        response = self.client.post(
+            "/api/projects",
+            json={"name": "default-project", "goal": "x", "agent_ids": [1]},
+            headers=self._login_headers("alice", "Alice123"),
+        )
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.json()["agent_assignments"], [{"id": 1, "co_located": True}])
+
+    def test_update_project_agent_assignment_overrides_default(self):
+        response = self.client.put(
+            "/api/projects/1",
+            json={"agent_assignments": [{"id": 1, "co_located": False}]},
+            headers=self._login_headers("alice", "Alice123"),
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["agent_assignments"], [{"id": 1, "co_located": False}])
+
+        with self.SessionLocal() as db:
+            agent = db.query(Agent).filter(Agent.id == 1).one()
+            agent.co_located = True
+            db.commit()
+
+        response = self.client.get("/api/projects/1", headers=self._login_headers("alice", "Alice123"))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["agent_assignments"], [{"id": 1, "co_located": False}])
 
     def test_project_detail_of_other_user_is_hidden(self):
         response = self.client.get("/api/projects/2", headers=self._login_headers("alice", "Alice123"))
         self.assertEqual(response.status_code, 404)
+
+    def test_project_timeout_null_update_snapshots_global_default(self):
+        response = self.client.put(
+            "/api/projects/1",
+            json={"task_timeout_minutes": None},
+            headers=self._login_headers("alice", "Alice123"),
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["task_timeout_minutes"], 37)
+
+        with self.SessionLocal() as db:
+            project = db.query(Project).filter(Project.id == 1).one()
+            self.assertEqual(project.task_timeout_minutes, 37)
 
     def test_agent_list_is_scoped_to_current_user(self):
         response = self.client.get("/api/agents", headers=self._login_headers("alice", "Alice123"))
@@ -265,6 +362,18 @@ class ProjectIsolationTests(unittest.TestCase):
                 assignee_agent_id=1,
                 depends_on_json="[]",
             ))
+            db.commit()
+
+        response = self.client.delete(
+            "/api/agents/1",
+            headers=self._login_headers("alice", "Alice123"),
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_delete_agent_is_blocked_by_project_assignment_object(self):
+        with self.SessionLocal() as db:
+            alice_project = db.query(Project).filter(Project.id == 1).one()
+            alice_project.agent_ids_json = json.dumps([{"id": 1, "co_located": True}])
             db.commit()
 
         response = self.client.delete(

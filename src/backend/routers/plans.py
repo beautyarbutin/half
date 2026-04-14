@@ -13,6 +13,9 @@ from models import Agent, Project, ProjectPlan, Task, User
 from services.path_service import ExpectedOutputPathError, normalize_expected_output_path
 from auth import get_current_user
 from services.prompt_service import generate_plan_prompt
+from services.polling_config_service import get_project_polling_settings
+from services.prompt_settings import get_plan_co_location_guidance
+from schemas import UtcDatetimeModel
 
 router = APIRouter(prefix="/api/projects", tags=["plans"])
 
@@ -45,7 +48,7 @@ class PlanImport(BaseModel):
     plan_type: str = "candidate"
 
 
-class PlanResponse(BaseModel):
+class PlanResponse(UtcDatetimeModel):
     id: int
     project_id: int
     source_agent_id: Optional[int]
@@ -249,7 +252,14 @@ def plan_generate_prompt(
 
     source_path = _plan_file_path(project, plan.id)
     usage_path = _plan_usage_path(project, plan.id) if body.include_usage else None
-    prompt, resolved_models = generate_plan_prompt(project, selected_agents, source_path, usage_path, selected_agent_models)
+    prompt, resolved_models = generate_plan_prompt(
+        project,
+        selected_agents,
+        source_path,
+        usage_path,
+        selected_agent_models,
+        get_plan_co_location_guidance(db),
+    )
     plan.prompt_text = prompt
     plan.source_path = source_path
     plan.selected_agent_models_json = _serialize_selected_agent_models(resolved_models)
@@ -313,6 +323,7 @@ def dispatch_plan(
             plan.source_path,
             _plan_usage_path(project, plan.id) if plan.include_usage else None,
             _parse_selected_agent_models(plan.selected_agent_models_json),
+            get_plan_co_location_guidance(db),
         )
         plan.selected_agent_models_json = _serialize_selected_agent_models(resolved_models)
     else:
@@ -416,6 +427,7 @@ def finalize_plan(project_id: int, body: FinalizeRequest, db: Session = Depends(
     plan.plan_type = "final"
     plan.status = "final"
     plan.updated_at = datetime.now(timezone.utc)
+    task_timeout_minutes = get_project_polling_settings(db, project)["task_timeout_minutes"]
 
     # Create task records
     created_tasks = []
@@ -460,6 +472,7 @@ def finalize_plan(project_id: int, body: FinalizeRequest, db: Session = Depends(
             status="pending",
             depends_on_json=json.dumps(depends_on),
             expected_output_path=expected_output,
+            timeout_minutes=task_timeout_minutes,
         )
         db.add(task)
         created_tasks.append(task)

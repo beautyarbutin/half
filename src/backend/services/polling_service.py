@@ -50,6 +50,18 @@ def _detect_task_result(project: Project, task: Task) -> tuple[bool, str | None]
     return False, result_path
 
 
+def get_effective_task_timeout_minutes(db: Session, project: Project, task: Task) -> int:
+    if task.timeout_minutes is not None:
+        return task.timeout_minutes
+
+    settings = get_project_polling_settings(db, project)
+    project_timeout = settings.get("task_timeout_minutes")
+    if project_timeout is not None:
+        return int(project_timeout)
+
+    return 10
+
+
 def _set_task_runtime_error(db: Session, task: Task, now: datetime, message: str, *, needs_attention: bool) -> None:
     task.last_error = message
     task.updated_at = now
@@ -145,8 +157,6 @@ def poll_project(db: Session, project: Project) -> None:
             plan.last_error = None
             plan.source_path = source_path
             plan.updated_at = now
-        elif sync_warning:
-            _set_plan_runtime_error(plan, now, sync_warning, needs_attention=False)
         elif plan.dispatched_at:
             elapsed_minutes = (now - plan.dispatched_at.replace(tzinfo=timezone.utc)).total_seconds() / 60
             if elapsed_minutes > 30:
@@ -175,11 +185,9 @@ def poll_project(db: Session, project: Project) -> None:
                 event_type="completed",
                 detail=f"Result detected at {result_path}",
             ))
-        elif sync_warning:
-            _set_task_runtime_error(db, task, now, sync_warning, needs_attention=False)
         elif task.dispatched_at:
             elapsed_minutes = (now - task.dispatched_at.replace(tzinfo=timezone.utc)).total_seconds() / 60
-            timeout_limit = task.timeout_minutes or 10
+            timeout_limit = get_effective_task_timeout_minutes(db, project, task)
             if elapsed_minutes > timeout_limit and task.status != "needs_attention":
                 task.status = "needs_attention"
                 task.last_error = f"Timeout: result not found at {result_path} after {elapsed_minutes:.1f} minutes"

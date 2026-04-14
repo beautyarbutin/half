@@ -22,6 +22,7 @@ from routers import agent_settings as agent_settings_router
 from routers import settings as settings_router
 from routers import users as users_router
 from services.polling_service import polling_loop
+from services.prompt_settings import DEFAULT_PLAN_CO_LOCATION_GUIDANCE, PLAN_CO_LOCATION_GUIDANCE_KEY
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("half")
@@ -89,6 +90,7 @@ def ensure_schema_updates():
         "agents": {
             "capability": "TEXT",
             "models_json": "TEXT DEFAULT '[]'",
+            "co_located": "BOOLEAN DEFAULT 0",
             "short_term_reset_at": "DATETIME",
             "short_term_reset_interval_hours": "INTEGER",
             "short_term_reset_needs_confirmation": "BOOLEAN DEFAULT 0",
@@ -111,6 +113,8 @@ def ensure_schema_updates():
             "polling_interval_max": "INTEGER",
             "polling_start_delay_minutes": "INTEGER",
             "polling_start_delay_seconds": "INTEGER",
+            "task_timeout_minutes": "INTEGER",
+            "planning_mode": "TEXT DEFAULT 'balanced'",
         },
         "project_plans": {
             "prompt_text": "TEXT",
@@ -140,14 +144,10 @@ def ensure_schema_updates():
                     conn.execute(text(f'ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}'))
                     logger.info("Added missing column %s.%s", table_name, column_name)
 
+        conn.execute(text("UPDATE users SET role = 'admin' WHERE username = 'admin'"))
         conn.execute(text("UPDATE users SET role = 'user' WHERE role IS NULL OR TRIM(role) = ''"))
         conn.execute(text("UPDATE users SET status = 'active' WHERE status IS NULL OR TRIM(status) = ''"))
-        conn.execute(
-            text(
-                "UPDATE users SET role = 'admin' "
-                "WHERE username = 'admin' AND (role IS NULL OR TRIM(role) = '')"
-            )
-        )
+        conn.execute(text("UPDATE projects SET planning_mode = 'balanced' WHERE planning_mode IS NULL OR TRIM(planning_mode) = ''"))
 
 
 def ensure_app_meta(conn):
@@ -227,16 +227,13 @@ def seed_global_polling_settings():
     """Initialize global polling settings with defaults if not already set."""
     db = SessionLocal()
     try:
-        # Check if settings already exist
-        existing = db.query(GlobalSetting).filter(GlobalSetting.key == "polling_interval_min").first()
-        if existing is not None:
-            return  # Already seeded
-
         defaults = {
             "polling_interval_min": "15",  # seconds
             "polling_interval_max": "30",  # seconds
             "polling_start_delay_minutes": "0",
             "polling_start_delay_seconds": "0",
+            "task_timeout_minutes": "10",
+            PLAN_CO_LOCATION_GUIDANCE_KEY: DEFAULT_PLAN_CO_LOCATION_GUIDANCE,
         }
 
         descriptions = {
@@ -244,9 +241,14 @@ def seed_global_polling_settings():
             "polling_interval_max": "Maximum polling interval in seconds",
             "polling_start_delay_minutes": "Minutes to delay before starting polling",
             "polling_start_delay_seconds": "Seconds to delay before starting polling (added to minutes)",
+            "task_timeout_minutes": "Default task timeout in minutes",
+            PLAN_CO_LOCATION_GUIDANCE_KEY: "Planning prompt guidance for co-located agent assignment",
         }
 
         for key, value in defaults.items():
+            existing = db.query(GlobalSetting).filter(GlobalSetting.key == key).first()
+            if existing is not None:
+                continue
             setting = GlobalSetting(
                 key=key,
                 value=value,

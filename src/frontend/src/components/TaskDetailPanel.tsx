@@ -3,6 +3,7 @@ import { Task, Agent } from '../types';
 import { api } from '../api/client';
 import StatusBadge from './StatusBadge';
 import { copyText } from '../contracts';
+import { formatDateTime } from '../utils/datetime';
 
 interface Props {
   task: Task;
@@ -19,6 +20,7 @@ export default function TaskDetailPanel({ task, agents, allTasks, onRefresh }: P
   const [draftTaskName, setDraftTaskName] = useState(task.task_name);
   const [draftDescription, setDraftDescription] = useState(task.description || '');
   const [draftExpectedOutput, setDraftExpectedOutput] = useState(task.expected_output_path || '');
+  const [draftTimeoutMinutes, setDraftTimeoutMinutes] = useState(String(task.timeout_minutes ?? 10));
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   // 预取的 Prompt。派发按钮在点击瞬间需要把 Prompt 同步写入剪贴板
   // （以保留浏览器的 user activation），所以不能等到点击之后再去 await
@@ -46,23 +48,35 @@ export default function TaskDetailPanel({ task, agents, allTasks, onRefresh }: P
     setDraftTaskName(task.task_name);
     setDraftDescription(task.description || '');
     setDraftExpectedOutput(task.expected_output_path || '');
+    setDraftTimeoutMinutes(String(task.timeout_minutes ?? 10));
     setSaveState('idle');
-  }, [task.description, task.expected_output_path, task.id, task.task_name]);
+  }, [task.description, task.expected_output_path, task.id, task.task_name, task.timeout_minutes]);
+
+  const parsedDraftTimeoutMinutes = Number.parseInt(draftTimeoutMinutes, 10);
+  const isDraftTimeoutValid = Number.isInteger(parsedDraftTimeoutMinutes)
+    && parsedDraftTimeoutMinutes >= 1
+    && parsedDraftTimeoutMinutes <= 120;
 
   const normalizedDraft = useMemo(() => ({
     task_name: draftTaskName.trim(),
     description: draftDescription,
     expected_output_path: draftExpectedOutput,
-  }), [draftDescription, draftExpectedOutput, draftTaskName]);
+    timeout_minutes: parsedDraftTimeoutMinutes,
+  }), [draftDescription, draftExpectedOutput, draftTaskName, parsedDraftTimeoutMinutes]);
   const hasDraftChanges = canEdit && (
     normalizedDraft.task_name !== task.task_name
     || normalizedDraft.description !== (task.description || '')
     || normalizedDraft.expected_output_path !== (task.expected_output_path || '')
+    || normalizedDraft.timeout_minutes !== task.timeout_minutes
   );
 
   useEffect(() => {
     if (!canEdit) return undefined;
     if (!hasDraftChanges) {
+      return undefined;
+    }
+    if (!isDraftTimeoutValid) {
+      setSaveState('error');
       return undefined;
     }
 
@@ -78,7 +92,7 @@ export default function TaskDetailPanel({ task, agents, allTasks, onRefresh }: P
     }, 600);
 
     return () => window.clearTimeout(timer);
-  }, [canEdit, hasDraftChanges, normalizedDraft, onRefresh, task.description, task.expected_output_path, task.id, task.task_name]);
+  }, [canEdit, hasDraftChanges, isDraftTimeoutValid, normalizedDraft, onRefresh, task.description, task.expected_output_path, task.id, task.task_name]);
 
   useEffect(() => {
     if (saveState !== 'saved') return undefined;
@@ -295,20 +309,36 @@ export default function TaskDetailPanel({ task, agents, allTasks, onRefresh }: P
 
       <div className="detail-section">
         <label>超时时间</label>
-        <p>{task.timeout_minutes} 分钟</p>
+        {canEdit ? (
+          <>
+            <input
+              type="number"
+              min="1"
+              max="120"
+              value={draftTimeoutMinutes}
+              onChange={(event) => setDraftTimeoutMinutes(event.target.value)}
+              className="detail-input"
+            />
+            <div className={`helper-text ${!isDraftTimeoutValid ? 'helper-text-error' : ''}`}>
+              范围：1-120 分钟
+            </div>
+          </>
+        ) : (
+          <p>{task.timeout_minutes} 分钟</p>
+        )}
       </div>
 
       {task.dispatched_at && (
         <div className="detail-section">
           <label>派发时间</label>
-          <p>{new Date(task.dispatched_at).toLocaleString('zh-CN')}</p>
+          <p>{formatDateTime(task.dispatched_at)}</p>
         </div>
       )}
 
       {task.completed_at && (
         <div className="detail-section">
           <label>完成时间</label>
-          <p>{new Date(task.completed_at).toLocaleString('zh-CN')}</p>
+          <p>{formatDateTime(task.completed_at)}</p>
         </div>
       )}
 

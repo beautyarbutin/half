@@ -65,12 +65,14 @@ describe('contracts helpers', () => {
       goal: 'Goal',
       git_repo_url: 'git@github.com:org/repo.git',
       collaboration_dir: 'tasks/shared',
+      planning_mode: 'quality',
       status: 'draft',
       created_at: '2026-04-02T00:00:00Z',
       agent_ids: [1],
     };
 
     expect(project.collaboration_dir).toBe('tasks/shared');
+    expect(project.planning_mode).toBe('quality');
   });
 
   it('exposes agent capability in the frontend agent contract', () => {
@@ -85,7 +87,7 @@ describe('contracts helpers', () => {
         { model_name: 'claude-opus-4-1', capability: '复杂规划' },
       ],
       capability: '长文本分析、任务拆解',
-      machine_label: 'macbook-1',
+      co_located: true,
       is_active: true,
       availability_status: 'unknown',
       subscription_expires_at: null,
@@ -98,5 +100,6 @@ describe('contracts helpers', () => {
     };
 
     expect(agent.capability).toContain('任务拆解');
+    expect(agent.co_located).toBe(true);
   });
 });

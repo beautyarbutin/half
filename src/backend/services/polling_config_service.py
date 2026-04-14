@@ -11,6 +11,7 @@ def get_global_polling_settings(db: Session) -> dict:
             "polling_interval_max",
             "polling_start_delay_minutes",
             "polling_start_delay_seconds",
+            "task_timeout_minutes",
         ])
     ).all()
 
@@ -19,6 +20,7 @@ def get_global_polling_settings(db: Session) -> dict:
         "polling_interval_max": 30,  # default 30 seconds
         "polling_start_delay_minutes": 0,  # default 0 minutes
         "polling_start_delay_seconds": 0,  # default 0 seconds
+        "task_timeout_minutes": 10,  # default 10 minutes
     }
 
     for setting in settings:
@@ -41,6 +43,7 @@ def get_project_polling_settings(db: Session, project: Project) -> dict:
         "polling_interval_max": project.polling_interval_max if project.polling_interval_max is not None else global_settings["polling_interval_max"],
         "polling_start_delay_minutes": project.polling_start_delay_minutes if project.polling_start_delay_minutes is not None else global_settings["polling_start_delay_minutes"],
         "polling_start_delay_seconds": project.polling_start_delay_seconds if project.polling_start_delay_seconds is not None else global_settings["polling_start_delay_seconds"],
+        "task_timeout_minutes": project.task_timeout_minutes if project.task_timeout_minutes is not None else global_settings["task_timeout_minutes"],
     }
 
 

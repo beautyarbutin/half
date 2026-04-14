@@ -4,13 +4,7 @@ import { api, extractApiErrorDetail } from '../api/client';
 import { isAdminUser } from '../auth';
 import PageHeader from '../components/PageHeader';
 import { AdminUser, CurrentUser } from '../types';
-
-function formatDateTime(value: string | null) {
-  if (!value) return '-';
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleString('zh-CN');
-}
+import { formatDateTime } from '../utils/datetime';
 
 function roleLabel(role: string) {
   return role === 'admin' ? '管理员' : '普通用户';

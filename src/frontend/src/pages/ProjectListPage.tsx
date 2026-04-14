@@ -4,6 +4,7 @@ import { api } from '../api/client';
 import { isAdminUser } from '../auth';
 import { Project } from '../types';
 import StatusBadge from '../components/StatusBadge';
+import { formatDate } from '../utils/datetime';
 
 export default function ProjectListPage() {
   const isAdmin = isAdminUser();
@@ -74,7 +75,7 @@ export default function ProjectListPage() {
               <p className="project-card-goal" onClick={() => navigate(`/projects/${project.id}`)}>{project.goal}</p>
               <div className="project-card-footer">
                 <span>{project.agent_ids?.length || 0} 个 Agent</span>
-                <span className="created-at">{new Date(project.created_at).toLocaleDateString('zh-CN')}</span>
+                <span className="created-at">{formatDate(project.created_at)}</span>
               </div>
               <div className="project-card-actions">
                 <button className="btn btn-sm btn-ghost" onClick={() => navigate(`/projects/${project.id}/edit`)} title="编辑项目基础信息与 Agent 选择">

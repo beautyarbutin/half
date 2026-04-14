@@ -3,6 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { api } from '../api/client';
 import { Task, Agent, Project } from '../types';
 import StatusBadge from '../components/StatusBadge';
+import { formatDateTime } from '../utils/datetime';
 
 interface SummaryEvent {
   id: number;
@@ -137,7 +138,7 @@ export default function SummaryPage() {
                 </td>
                 <td>
                   {task.completed_at
-                    ? new Date(task.completed_at).toLocaleString('zh-CN')
+                    ? formatDateTime(task.completed_at)
                     : <span className="text-muted">-</span>}
                 </td>
               </tr>
@@ -166,7 +167,7 @@ export default function SummaryPage() {
                     <td className="code-cell">{task ? task.task_code : `#${event.task_id}`}</td>
                     <td>{EVENT_LABELS[event.event_type] || event.event_type}</td>
                     <td>{event.detail || '-'}</td>
-                    <td>{new Date(event.created_at).toLocaleString('zh-CN')}</td>
+                    <td>{formatDateTime(event.created_at)}</td>
                   </tr>
                 );
               })}

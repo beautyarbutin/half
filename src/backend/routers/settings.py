@@ -4,6 +4,12 @@ from sqlalchemy.orm import Session
 from database import get_db
 from models import GlobalSetting
 from auth import get_current_user, require_admin
+from services.polling_config_service import get_global_polling_settings
+from services.prompt_settings import (
+    DEFAULT_PLAN_CO_LOCATION_GUIDANCE,
+    get_plan_co_location_guidance,
+    upsert_plan_co_location_guidance,
+)
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 
@@ -14,23 +20,7 @@ async def get_polling_settings(
     _user=Depends(get_current_user),
 ):
     """Get global polling settings."""
-    settings = db.query(GlobalSetting).filter(
-        GlobalSetting.key.in_([
-            "polling_interval_min",
-            "polling_interval_max",
-            "polling_start_delay_minutes",
-            "polling_start_delay_seconds",
-        ])
-    ).all()
-
-    result = {}
-    for setting in settings:
-        try:
-            result[setting.key] = int(setting.value)
-        except (ValueError, TypeError):
-            result[setting.key] = setting.value
-
-    return result
+    return get_global_polling_settings(db)
 
 
 def _validate_global_polling_payload(payload: dict) -> dict:
@@ -44,6 +34,7 @@ def _validate_global_polling_payload(payload: dict) -> dict:
         "polling_interval_max",
         "polling_start_delay_minutes",
         "polling_start_delay_seconds",
+        "task_timeout_minutes",
     }
     coerced: dict = {}
     for key, value in payload.items():
@@ -76,6 +67,10 @@ def _validate_global_polling_payload(payload: dict) -> dict:
         v = coerced["polling_start_delay_seconds"]
         if v < 0 or v > 59:
             raise HTTPException(status_code=400, detail="polling_start_delay_seconds must be 0-59")
+    if "task_timeout_minutes" in coerced:
+        v = coerced["task_timeout_minutes"]
+        if v < 1 or v > 120:
+            raise HTTPException(status_code=400, detail="task_timeout_minutes must be 1-120 minutes")
 
     return coerced
 
@@ -115,3 +110,34 @@ async def update_polling_settings(
 
     db.commit()
     return {"message": "Settings updated successfully"}
+
+
+@router.get("/prompt")
+async def get_prompt_settings(
+    db: Session = Depends(get_db),
+    _user=Depends(get_current_user),
+):
+    """Get global prompt settings."""
+    return {
+        "co_location_guidance": get_plan_co_location_guidance(db),
+        "default_co_location_guidance": DEFAULT_PLAN_CO_LOCATION_GUIDANCE,
+    }
+
+
+@router.put("/prompt")
+async def update_prompt_settings(
+    settings_data: dict,
+    db: Session = Depends(get_db),
+    _user=Depends(require_admin),
+):
+    """Update global prompt settings."""
+    if "co_location_guidance" not in settings_data:
+        raise HTTPException(status_code=400, detail="co_location_guidance is required")
+    try:
+        guidance = upsert_plan_co_location_guidance(db, settings_data.get("co_location_guidance"))
+    except ValueError:
+        raise HTTPException(status_code=400, detail="co_location_guidance must not be empty")
+    return {
+        "co_location_guidance": guidance,
+        "default_co_location_guidance": DEFAULT_PLAN_CO_LOCATION_GUIDANCE,
+    }

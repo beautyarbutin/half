@@ -373,6 +373,25 @@ body {
   gap: 16px;
 }
 
+.prompt-settings-actions {
+  display: flex;
+  justify-content: flex-start;
+}
+
+.checkbox-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+}
+
+.checkbox-field input {
+  width: auto;
+}
+
 .form-actions {
   display: flex;
   gap: 12px;
@@ -1053,6 +1072,23 @@ body {
   margin-top: 4px;
 }
 
+
+.plan-mode-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.plan-mode-summary strong {
+  font-size: 14px;
+}
+
+.plan-mode-summary p {
+  color: var(--color-text-secondary);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
 .plan-note-list {
   padding-left: 18px;
   display: flex;
@@ -1649,6 +1685,12 @@ body {
   border: 1px solid #fde68a;
   font-family: var(--font-mono);
   font-size: 11px;
+}
+
+.badge-neutral {
+  background: #ecfdf5;
+  color: #047857;
+  border: 1px solid #a7f3d0;
 }
 
 .model-badge-group {
@@ -2321,6 +2363,58 @@ body {
   font-size: 13px !important;
 }
 
+
+.planning-mode-options {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.planning-mode-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: var(--color-surface);
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.planning-mode-option:hover {
+  border-color: var(--color-primary);
+  background: #fafcff;
+}
+
+.planning-mode-option.selected {
+  border-color: var(--color-primary);
+  background: #f8fbff;
+}
+
+.planning-mode-option input {
+  flex: 0 0 auto;
+  width: auto;
+  margin-top: 3px;
+}
+
+.planning-mode-option-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.planning-mode-option-label {
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.planning-mode-option-description {
+  color: var(--color-text-secondary);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
 /* ===== Agent Select Cards (Project Form) ===== */
 .agent-select-cards {
   display: grid;
@@ -2415,6 +2509,17 @@ body {
   gap: 6px;
 }
 
+.agent-select-card-colocation {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+}
+
 .model-capability-list {
   display: flex;
   flex-direction: column;
@@ -2442,6 +2547,7 @@ body {
   .project-console-grid,
   .plan-layout,
   .plan-agent-grid,
+  .planning-mode-options,
   .plan-chart-layout,
   .plan-task-list,
   .tasks-layout {

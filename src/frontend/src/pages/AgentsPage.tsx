@@ -21,6 +21,7 @@ interface AgentForm {
   agent_type: string;
   custom_agent_type: string;
   models: AgentModelForm[];
+  co_located: boolean;
   subscription_expires_at: string;
   short_term_reset_at: string;
   short_term_reset_timezone: string;
@@ -55,6 +56,7 @@ function createEmptyForm(): AgentForm {
     agent_type: '',
     custom_agent_type: '',
     models: [createEmptyModelForm()],
+    co_located: false,
     subscription_expires_at: '',
     short_term_reset_at: '',
     short_term_reset_timezone: 'CST',
@@ -256,6 +258,7 @@ export default function AgentsPage() {
       agent_type: knownType ? agent.agent_type : '__custom__',
       custom_agent_type: knownType ? '' : agent.agent_type,
       models: normalizeAgentModelsForForm(agent, knownModels),
+      co_located: Boolean(agent.co_located),
       subscription_expires_at: formatForDateTimeLocal(agent.subscription_expires_at),
       short_term_reset_at: formatBeijingStoredForInput(agent.short_term_reset_at),
       short_term_reset_timezone: 'CST',
@@ -271,7 +274,7 @@ export default function AgentsPage() {
   }
 
   function handleCancel() { setShowForm(false); setEditingId(null); setError(''); }
-  function updateField(field: keyof AgentForm, value: string) { setForm((prev) => ({ ...prev, [field]: value })); }
+  function updateField(field: keyof AgentForm, value: string | boolean) { setForm((prev) => ({ ...prev, [field]: value })); }
   function updateModelField(index: number, field: keyof AgentModelForm, value: string) {
     setForm((prev) => ({
       ...prev,
@@ -298,6 +301,7 @@ export default function AgentsPage() {
         agent_type: effectiveAgentType,
         model_name: resolvedFormModels[0]?.model_name || null,
         capability: resolvedCapabilitySummary || null,
+        co_located: form.co_located,
         models: resolvedFormModels.map((model) => ({
           model_name: model.model_name,
           capability: model.capability,
@@ -499,6 +503,14 @@ export default function AgentsPage() {
                   <input type="datetime-local" value={form.subscription_expires_at} onChange={(e) => updateField('subscription_expires_at', e.target.value)} />
                 </div>
               </div>
+              <label className="checkbox-field" title="勾选则表示该agent所在的机器与项目部署的机器是同一台">
+                <input
+                  type="checkbox"
+                  checked={form.co_located}
+                  onChange={(e) => updateField('co_located', e.target.checked)}
+                />
+                <span>同服务器</span>
+              </label>
             </SectionCard>
 
             <SectionCard title="模型与能力">
@@ -738,6 +750,7 @@ export default function AgentsPage() {
                 {getAgentModels(agent).map((model, index) => (
                   <ModelBadge key={`${agent.id}-${model.model_name}-${index}`} type={index === 0 ? agent.agent_type : undefined} model={model.model_name} />
                 ))}
+                {agent.co_located && <span className="badge badge-neutral" title="该 Agent 默认与项目部署机器同服务器">同服务器</span>}
                 {expiryDisplay && <span className={`badge badge-expiry${expiringSoon ? ' badge-expiry-warning' : ''}`} title="订阅到期时间">{expiryDisplay}</span>}
               </div>
 

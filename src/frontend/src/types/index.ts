@@ -28,7 +28,7 @@ export interface Agent {
   model_name: string | null;
   models: AgentModelConfig[];
   capability: string | null;
-  machine_label: string | null;
+  co_located: boolean;
   is_active: boolean;
   availability_status: string;
   display_order: number;
@@ -56,6 +56,11 @@ export interface AgentTypeConfig {
   models: ModelDefinition[];
 }
 
+export interface ProjectAgentAssignment {
+  id: number;
+  co_located: boolean;
+}
+
 export interface Project {
   id: number;
   name: string;
@@ -65,10 +70,13 @@ export interface Project {
   status: string;
   created_at: string;
   agent_ids?: number[];
+  agent_assignments?: ProjectAgentAssignment[];
   polling_interval_min?: number | null;
   polling_interval_max?: number | null;
   polling_start_delay_minutes?: number | null;
   polling_start_delay_seconds?: number | null;
+  task_timeout_minutes?: number | null;
+  planning_mode?: string;
   next_step?: string | {
     action: string;
     message: string;

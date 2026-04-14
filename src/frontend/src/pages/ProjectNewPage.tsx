@@ -7,6 +7,7 @@ import SectionCard from '../components/SectionCard';
 import StatusBadge from '../components/StatusBadge';
 import ModelBadge from '../components/ModelBadge';
 import { deriveAgentStatus, getAgentModels, summarizeAgentCapabilities } from '../utils/agents';
+import { DEFAULT_PLANNING_MODE, PLANNING_MODE_OPTIONS, PlanningMode, normalizePlanningMode } from '../utils/planningMode';
 
 export default function ProjectNewPage() {
   const { id } = useParams<{ id: string }>();
@@ -16,11 +17,14 @@ export default function ProjectNewPage() {
   const [gitRepoUrl, setGitRepoUrl] = useState('');
   const [collaborationDir, setCollaborationDir] = useState('');
   const [selectedAgentIds, setSelectedAgentIds] = useState<number[]>([]);
+  const [agentCoLocated, setAgentCoLocated] = useState<Record<number, boolean>>({});
   const [agents, setAgents] = useState<Agent[]>([]);
   const [pollingIntervalMin, setPollingIntervalMin] = useState<number | null>(null);
   const [pollingIntervalMax, setPollingIntervalMax] = useState<number | null>(null);
   const [pollingStartDelayMinutes, setPollingStartDelayMinutes] = useState<number | null>(null);
   const [pollingStartDelaySeconds, setPollingStartDelaySeconds] = useState<number | null>(null);
+  const [taskTimeoutMinutes, setTaskTimeoutMinutes] = useState<number | null>(10);
+  const [planningMode, setPlanningMode] = useState<PlanningMode>(DEFAULT_PLANNING_MODE);
   const [loading, setLoading] = useState(false);
   const [initializing, setInitializing] = useState(true);
   const [error, setError] = useState('');
@@ -36,29 +40,34 @@ export default function ProjectNewPage() {
         const [agentList, project, globalPolling] = await Promise.all([
           api.get<Agent[]>('/api/agents'),
           isEditMode ? api.get<Project>(`/api/projects/${id}`) : Promise.resolve(null),
-          // In create mode we prefill the form with the current global polling
-          // defaults so the user can see them and tweak if desired. In edit
-          // mode the project's own snapshot wins.
-          isEditMode
-            ? Promise.resolve(null)
-            : api.get<{
+          api.get<{
                 polling_interval_min: number;
                 polling_interval_max: number;
                 polling_start_delay_minutes: number;
                 polling_start_delay_seconds: number;
+                task_timeout_minutes: number;
               }>('/api/settings/polling').catch(() => null),
         ]);
         setAgents(agentList);
         if (project) {
+          const assignments = project.agent_assignments?.length
+            ? project.agent_assignments
+            : (project.agent_ids || []).map((agentId) => {
+                const agent = agentList.find((item) => item.id === agentId);
+                return { id: agentId, co_located: Boolean(agent?.co_located) };
+              });
           setName(project.name || '');
           setGoal(project.goal || '');
           setGitRepoUrl(project.git_repo_url || '');
           setCollaborationDir(project.collaboration_dir || '');
-          setSelectedAgentIds(project.agent_ids || []);
+          setSelectedAgentIds(assignments.map((assignment) => assignment.id));
+          setAgentCoLocated(Object.fromEntries(assignments.map((assignment) => [assignment.id, assignment.co_located])));
           setPollingIntervalMin(project.polling_interval_min ?? null);
           setPollingIntervalMax(project.polling_interval_max ?? null);
           setPollingStartDelayMinutes(project.polling_start_delay_minutes ?? null);
           setPollingStartDelaySeconds(project.polling_start_delay_seconds ?? null);
+          setTaskTimeoutMinutes(project.task_timeout_minutes ?? globalPolling?.task_timeout_minutes ?? 10);
+          setPlanningMode(normalizePlanningMode(project.planning_mode));
         } else if (globalPolling) {
           // Prefill from global defaults so the user starts with the
           // configured range/delay and can adjust per-project.
@@ -66,6 +75,9 @@ export default function ProjectNewPage() {
           setPollingIntervalMax(globalPolling.polling_interval_max);
           setPollingStartDelayMinutes(globalPolling.polling_start_delay_minutes);
           setPollingStartDelaySeconds(globalPolling.polling_start_delay_seconds);
+          setTaskTimeoutMinutes(globalPolling.task_timeout_minutes);
+        } else {
+          setTaskTimeoutMinutes(10);
         }
       } catch (err) {
         setError(`加载失败：${err}`);
@@ -79,9 +91,23 @@ export default function ProjectNewPage() {
   const sortedAgents = useMemo(() => [...agents].sort((a, b) => a.name.localeCompare(b.name)), [agents]);
 
   function toggleAgent(agentId: number) {
-    setSelectedAgentIds((prev) =>
-      prev.includes(agentId) ? prev.filter((i) => i !== agentId) : [...prev, agentId]
-    );
+    setSelectedAgentIds((prev) => {
+      if (prev.includes(agentId)) {
+        setAgentCoLocated((current) => {
+          const next = { ...current };
+          delete next[agentId];
+          return next;
+        });
+        return prev.filter((i) => i !== agentId);
+      }
+      const agent = agents.find((item) => item.id === agentId);
+      setAgentCoLocated((current) => ({ ...current, [agentId]: Boolean(agent?.co_located) }));
+      return [...prev, agentId];
+    });
+  }
+
+  function updateAgentCoLocated(agentId: number, value: boolean) {
+    setAgentCoLocated((prev) => ({ ...prev, [agentId]: value }));
   }
 
   async function handleSubmit(e: React.FormEvent) {
@@ -105,6 +131,9 @@ export default function ProjectNewPage() {
     if (pollingStartDelaySeconds !== null && (pollingStartDelaySeconds < 0 || pollingStartDelaySeconds > 59)) {
       setError('启动延迟秒数必须在 0-59 之间'); return;
     }
+    if (taskTimeoutMinutes === null || taskTimeoutMinutes < 1 || taskTimeoutMinutes > 120) {
+      setError('Task 超时时间必须在 1-120 分钟之间'); return;
+    }
     setLoading(true);
     try {
       const payload = {
@@ -112,11 +141,16 @@ export default function ProjectNewPage() {
         goal,
         git_repo_url: gitRepoUrl,
         collaboration_dir: collaborationDir.trim() || null,
-        agent_ids: selectedAgentIds,
+        agent_assignments: selectedAgentIds.map((agentId) => ({
+          id: agentId,
+          co_located: Boolean(agentCoLocated[agentId]),
+        })),
         polling_interval_min: pollingIntervalMin,
         polling_interval_max: pollingIntervalMax,
         polling_start_delay_minutes: pollingStartDelayMinutes,
         polling_start_delay_seconds: pollingStartDelaySeconds,
+        task_timeout_minutes: taskTimeoutMinutes,
+        planning_mode: planningMode,
       };
       const project = isEditMode
         ? await api.put<Project>(`/api/projects/${id}`, payload)
@@ -151,6 +185,26 @@ export default function ProjectNewPage() {
           <div className="form-group">
             <label htmlFor="goal">项目目标</label>
             <textarea id="goal" value={goal} onChange={(e) => setGoal(e.target.value)} required rows={4} placeholder="描述项目要完成什么、交付什么，以及验收标准。" />
+          </div>
+        </SectionCard>
+
+        <SectionCard title="模式" description="用于后续 Plan 规划 Prompt 的任务拆分、Agent 分配和模型选择策略">
+          <div className="planning-mode-options" role="radiogroup" aria-label="项目规划模式">
+            {PLANNING_MODE_OPTIONS.map((option) => (
+              <label key={option.value} className={`planning-mode-option ${planningMode === option.value ? 'selected' : ''}`}>
+                <input
+                  type="radio"
+                  name="planning-mode"
+                  value={option.value}
+                  checked={planningMode === option.value}
+                  onChange={() => setPlanningMode(option.value)}
+                />
+                <span className="planning-mode-option-copy">
+                  <span className="planning-mode-option-label">{option.label}</span>
+                  <span className="planning-mode-option-description">{option.description}</span>
+                </span>
+              </label>
+            ))}
           </div>
         </SectionCard>
 
@@ -223,6 +277,20 @@ export default function ProjectNewPage() {
               />
             </div>
           </div>
+          <div className="form-row">
+            <div className="form-group">
+              <label htmlFor="task-timeout">Task 超时时间（分钟）</label>
+              <input
+                id="task-timeout"
+                type="number"
+                min="1"
+                max="120"
+                value={taskTimeoutMinutes ?? ''}
+                onChange={(e) => setTaskTimeoutMinutes(e.target.value === '' ? null : parseInt(e.target.value))}
+                placeholder="请输入 1-120 分钟"
+              />
+            </div>
+          </div>
         </SectionCard>
 
         <SectionCard title="参与智能体" description="选择可参与此项目执行的 Agent">
@@ -250,6 +318,20 @@ export default function ProjectNewPage() {
                     </div>
                     {summarizeAgentCapabilities(agent) && (
                       <p className="agent-select-card-cap">{summarizeAgentCapabilities(agent)}</p>
+                    )}
+                    {selected && (
+                      <label
+                        className="agent-select-card-colocation"
+                        title="勾选则表示该agent所在的机器与项目部署的机器是同一台"
+                        onClick={(event) => event.stopPropagation()}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={Boolean(agentCoLocated[agent.id])}
+                          onChange={(event) => updateAgentCoLocated(agent.id, event.target.checked)}
+                        />
+                        <span>同服务器</span>
+                      </label>
                     )}
                   </div>
                 </div>
