@@ -4,6 +4,7 @@ import { api } from '../api/client';
 import { copyText, getPlanIdToFinalize } from '../contracts';
 import { Agent, Plan, ProcessTemplate, Project } from '../types';
 import { getAgentModels } from '../utils/agents';
+import { FlowSource, getInitialFlowSource } from '../utils/flowSource';
 import { DEFAULT_PLANNING_MODE, PLANNING_MODE_OPTIONS, PlanningMode, getPlanningModeMeta, normalizePlanningMode } from '../utils/planningMode';
 
 function formatDuration(seconds: number): string {
@@ -34,7 +35,7 @@ export default function PlanPage() {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [plans, setPlans] = useState<Plan[]>([]);
   const [templates, setTemplates] = useState<ProcessTemplate[]>([]);
-  const [flowSource, setFlowSource] = useState<'prompt' | 'template'>('prompt');
+  const [flowSource, setFlowSource] = useState<FlowSource>('template');
   const [planningBrief, setPlanningBrief] = useState('');
   const [planningMode, setPlanningMode] = useState<PlanningMode>(DEFAULT_PLANNING_MODE);
   const [selectedAgentIds, setSelectedAgentIds] = useState<number[]>([]);
@@ -51,6 +52,13 @@ export default function PlanPage() {
   const [isAutoFinalizing, setIsAutoFinalizing] = useState(false);
   const timerStartedAtRef = useRef<number | null>(null);
   const autoFinalizeTriggeredRef = useRef<number | null>(null);
+  const didAutoSelectFlowSourceRef = useRef(false);
+  const didUserSelectFlowSourceRef = useRef(false);
+
+  function updateFlowSource(next: FlowSource) {
+    didUserSelectFlowSourceRef.current = true;
+    setFlowSource(next);
+  }
 
   const fetchPageData = useCallback(async () => {
     // 跨页面共享的 agents 走 stale-while-revalidate 缓存，避免每次切页都白屏等待。
@@ -71,6 +79,11 @@ export default function PlanPage() {
       setTemplates(templateList);
       setPlanningBrief((current) => current || projectData.goal || '');
       setPlanningMode(normalizePlanningMode(projectData.planning_mode));
+
+      if (!didAutoSelectFlowSourceRef.current && !didUserSelectFlowSourceRef.current) {
+        didAutoSelectFlowSourceRef.current = true;
+        setFlowSource(getInitialFlowSource(projectData.agent_ids, templateList));
+      }
 
       const latestPlan = [...planList].reverse()[0] || null;
       if (latestPlan) {
@@ -403,31 +416,30 @@ export default function PlanPage() {
 
             <div className="plan-field">
               <label>流程来源</label>
-              <div className="planning-mode-options" role="radiogroup" aria-label="流程来源">
-                <label className={`planning-mode-option ${flowSource === 'prompt' ? 'selected' : ''}`}>
-                  <input
-                    type="radio"
-                    name="flow-source"
-                    checked={flowSource === 'prompt'}
-                    onChange={() => setFlowSource('prompt')}
-                  />
-                  <span className="planning-mode-option-copy">
-                    <span className="planning-mode-option-label">由 Prompt 生成流程</span>
-                    <span className="planning-mode-option-description">生成规划 Prompt，交给外部 Agent 产出 plan JSON。</span>
-                  </span>
-                </label>
-                <label className={`planning-mode-option ${flowSource === 'template' ? 'selected' : ''}`}>
+              <div className="flow-source-segmented" role="radiogroup" aria-label="流程来源">
+                <label className={`flow-source-segment ${flowSource === 'template' ? 'selected' : ''}`}>
                   <input
                     type="radio"
                     name="flow-source"
                     checked={flowSource === 'template'}
-                    onChange={() => setFlowSource('template')}
+                    onChange={() => updateFlowSource('template')}
                   />
-                  <span className="planning-mode-option-copy">
-                    <span className="planning-mode-option-label">使用模版生成流程</span>
-                    <span className="planning-mode-option-description">选择预定义流程模版，完成角色映射后直接生成任务。</span>
-                  </span>
+                  <span>使用模版生成流程</span>
                 </label>
+                <label className={`flow-source-segment ${flowSource === 'prompt' ? 'selected' : ''}`}>
+                  <input
+                    type="radio"
+                    name="flow-source"
+                    checked={flowSource === 'prompt'}
+                    onChange={() => updateFlowSource('prompt')}
+                  />
+                  <span>由 Prompt 生成流程</span>
+                </label>
+              </div>
+              <div className="flow-source-hint helper-text" aria-live="polite">
+                {flowSource === 'prompt'
+                  ? '生成规划 Prompt，交给外部 Agent 产出 plan JSON。'
+                  : '选择已有模版，完成角色映射后直接生成任务。'}
               </div>
             </div>
 
@@ -567,22 +579,27 @@ export default function PlanPage() {
                         const selectedAgentId = slotAgentIds[slot] ?? null;
                         return (
                           <div key={slot} className="template-slot-row">
-                            <span>{slot}</span>
-                            <select
-                              value={selectedAgentId ?? ''}
-                              onChange={(event) => updateSlotAgent(slot, event.target.value)}
-                            >
-                              <option value="">选择 Agent</option>
-                              {projectAgents.map((agent) => (
-                                <option
-                                  key={agent.id}
-                                  value={agent.id}
-                                  disabled={mappedAgentIds.includes(agent.id) && selectedAgentId !== agent.id}
-                                >
-                                  {agent.name} ({agent.agent_type})
-                                </option>
-                              ))}
-                            </select>
+                            <div className="template-slot-row-main">
+                              <span className="template-slot-name">{slot}</span>
+                              <select
+                                value={selectedAgentId ?? ''}
+                                onChange={(event) => updateSlotAgent(slot, event.target.value)}
+                              >
+                                <option value="">选择 Agent</option>
+                                {projectAgents.map((agent) => (
+                                  <option
+                                    key={agent.id}
+                                    value={agent.id}
+                                    disabled={mappedAgentIds.includes(agent.id) && selectedAgentId !== agent.id}
+                                  >
+                                    {agent.name} ({agent.agent_type})
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+                            <div className="template-slot-description">
+                              {selectedTemplate.agent_roles_description?.[slot] || '暂无说明'}
+                            </div>
                           </div>
                         );
                       })}

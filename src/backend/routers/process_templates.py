@@ -25,6 +25,7 @@ class ProcessTemplateBase(BaseModel):
     name: str = ""
     description: str = ""
     template_json: str | dict
+    agent_roles_description: Optional[dict[str, object]] = None
 
 
 class ProcessTemplateCreate(ProcessTemplateBase):
@@ -35,6 +36,7 @@ class ProcessTemplateUpdate(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
     template_json: Optional[str | dict] = None
+    agent_roles_description: Optional[dict[str, object]] = None
 
 
 class ProcessTemplateResponse(UtcDatetimeModel):
@@ -43,6 +45,7 @@ class ProcessTemplateResponse(UtcDatetimeModel):
     description: Optional[str]
     agent_count: int
     agent_slots: list[str]
+    agent_roles_description: dict[str, str]
     template_json: str
     created_by: Optional[int]
     updated_by: Optional[int]
@@ -180,6 +183,38 @@ def _can_edit(template: ProcessTemplate, user: User) -> bool:
     return user.role == "admin" or template.created_by == user.id
 
 
+def _parse_agent_roles_description(value: str | None) -> dict[str, str]:
+    if not value:
+        return {}
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+    roles: dict[str, str] = {}
+    for slot, description in parsed.items():
+        if isinstance(slot, str) and isinstance(description, str):
+            trimmed = description.strip()
+            if trimmed:
+                roles[slot] = trimmed
+    return roles
+
+
+def _normalize_agent_roles_description(value: dict[str, object] | None, slots: list[str]) -> dict[str, str]:
+    if not value:
+        return {}
+    slot_set = set(slots)
+    roles: dict[str, str] = {}
+    for slot, description in value.items():
+        if slot not in slot_set or not isinstance(description, str):
+            continue
+        trimmed = description.strip()
+        if trimmed:
+            roles[slot] = trimmed
+    return roles
+
+
 def _build_response(template: ProcessTemplate, user: User) -> ProcessTemplateResponse:
     try:
         slots = json.loads(template.agent_slots_json or "[]")
@@ -193,6 +228,7 @@ def _build_response(template: ProcessTemplate, user: User) -> ProcessTemplateRes
         description=template.description,
         agent_count=template.agent_count or 0,
         agent_slots=[str(slot) for slot in slots],
+        agent_roles_description=_parse_agent_roles_description(template.agent_roles_description_json),
         template_json=template.template_json,
         created_by=template.created_by,
         updated_by=template.updated_by,
@@ -239,7 +275,12 @@ def generate_template_prompt(body: TemplatePromptRequest, _user: User = Depends(
 必须输出一个 JSON 对象，包含：
 - plan_name: 模版名称
 - description: 适用场景说明
+- agent_roles: 角色说明数组，用于说明每个 agent-N 槽位的职责和适合的 Agent 类型
 - tasks: 非空数组
+
+agent_roles 中每一项必须包含：
+- slot: 对应的抽象角色槽位，例如 agent-1
+- description: 一段 60-120 字的自然语言说明，包含该角色承担的关键任务概括，以及适合由什么类型的 Agent 担任
 
 每个 task 必须包含：
 - task_code: 唯一任务码
@@ -253,7 +294,9 @@ def generate_template_prompt(body: TemplatePromptRequest, _user: User = Depends(
 1. 不要使用具体 agent 名称、slug、类型或模型。
 2. 不要使用绝对路径，不要写具体协作目录。
 3. 任务依赖必须是 DAG，不能循环依赖。
-4. 只输出 JSON，不要输出 markdown 代码块。"""
+4. agent_roles 的 slot 必须覆盖 tasks 中实际使用到的每个 assignee；不要为未使用的 slot 写说明。
+5. description 面向项目管理者阅读，不要堆砌任务细节，力求一眼看懂。
+6. 只输出 JSON，不要输出 markdown 代码块。"""
     return TemplatePromptResponse(prompt=prompt)
 
 
@@ -266,12 +309,14 @@ def list_templates(db: Session = Depends(get_db), user: User = Depends(get_curre
 @router.post("", response_model=ProcessTemplateResponse, status_code=status.HTTP_201_CREATED)
 def create_template(body: ProcessTemplateCreate, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     name, description, template_json, slots = _derive_metadata(body)
+    roles_description = _normalize_agent_roles_description(body.agent_roles_description, slots)
     now = datetime.now(timezone.utc)
     template = ProcessTemplate(
         name=name,
         description=description,
         agent_count=len(slots),
         agent_slots_json=json.dumps(slots, ensure_ascii=False),
+        agent_roles_description_json=json.dumps(roles_description, ensure_ascii=False) if roles_description else None,
         template_json=template_json,
         created_by=user.id,
         updated_by=user.id,
@@ -300,11 +345,16 @@ def update_template(template_id: int, body: ProcessTemplateUpdate, db: Session =
     if not _can_edit(template, user):
         raise HTTPException(status_code=403, detail="Only template creator or admin can edit this template")
     name, description, template_json, slots = _derive_metadata(body, template)
+    raw_roles_description = body.agent_roles_description
+    if raw_roles_description is None:
+        raw_roles_description = _parse_agent_roles_description(template.agent_roles_description_json)
+    roles_description = _normalize_agent_roles_description(raw_roles_description, slots)
     template.name = name
     template.description = description
     template.template_json = template_json
     template.agent_count = len(slots)
     template.agent_slots_json = json.dumps(slots, ensure_ascii=False)
+    template.agent_roles_description_json = json.dumps(roles_description, ensure_ascii=False) if roles_description else None
     template.updated_by = user.id
     template.updated_at = datetime.now(timezone.utc)
     db.commit()

@@ -5,6 +5,13 @@ import DagView from '../components/DagView';
 import PageHeader from '../components/PageHeader';
 import SectionCard from '../components/SectionCard';
 import { ProcessTemplate, Task } from '../types';
+import type { AgentRolesDescription } from '../utils/processTemplateRoles';
+import {
+  buildRolesPayload,
+  getTemplateAgentSlots,
+  parseAgentRolesFromTemplateJson,
+  syncRolesForSlots,
+} from '../utils/processTemplateRoles';
 
 function parseTemplateTasks(templateJson: string): Task[] {
   const parsed = JSON.parse(templateJson);
@@ -55,6 +62,8 @@ export default function ProcessTemplatesPage() {
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [previewTasks, setPreviewTasks] = useState<Task[]>([]);
+  const [previewAgentSlots, setPreviewAgentSlots] = useState<string[]>([]);
+  const [agentRolesDescription, setAgentRolesDescription] = useState<AgentRolesDescription>({});
   const [selectedPreviewTaskId, setSelectedPreviewTaskId] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -65,13 +74,29 @@ export default function ProcessTemplatesPage() {
       setLoading(true);
       setError('');
       try {
-        if (templateId) {
+        if (isNew) {
+          setTemplate(null);
+          setTemplates([]);
+          setDescriptionInput('');
+          setGeneratedPrompt('');
+          setJsonInput('');
+          setName('');
+          setDescription('');
+          setPreviewTasks([]);
+          setPreviewAgentSlots([]);
+          setAgentRolesDescription({});
+          setSelectedPreviewTaskId(null);
+        } else if (templateId) {
           const item = await api.get<ProcessTemplate>(`/api/process-templates/${templateId}`);
           setTemplate(item);
           setJsonInput(item.template_json);
           setName(item.name);
           setDescription(item.description || '');
-          setPreviewTasks(parseTemplateTasks(item.template_json));
+          const tasks = parseTemplateTasks(item.template_json);
+          const slots = item.agent_slots?.length ? item.agent_slots : getTemplateAgentSlots(item.template_json);
+          setPreviewTasks(tasks);
+          setPreviewAgentSlots(slots);
+          setAgentRolesDescription(syncRolesForSlots(item.agent_roles_description || {}, slots));
         } else if (!isNew) {
           const list = await api.get<ProcessTemplate[]>('/api/process-templates');
           setTemplates(list);
@@ -115,6 +140,8 @@ export default function ProcessTemplatesPage() {
       if (!tasks.length) {
         throw new Error('JSON 中没有 tasks。');
       }
+      const slots = getTemplateAgentSlots(jsonInput);
+      const prefill = parseAgentRolesFromTemplateJson(jsonInput, slots);
       const summary = getTemplateSummary(jsonInput);
       if (!name.trim() && summary.name) {
         setName(summary.name);
@@ -123,20 +150,33 @@ export default function ProcessTemplatesPage() {
         setDescription(summary.description);
       }
       setPreviewTasks(tasks);
+      setPreviewAgentSlots(slots);
+      setAgentRolesDescription((current) => syncRolesForSlots(current, slots, prefill));
       setSelectedPreviewTaskId(tasks[0]?.id ?? null);
     } catch (err) {
       setError(`预览失败：${err}`);
     }
   }
 
+  function updateRoleDescription(slot: string, value: string) {
+    setAgentRolesDescription((current) => ({ ...current, [slot]: value }));
+  }
+
   async function handleSave() {
     setSaving(true);
     setError('');
     try {
+      let slotsForPayload = previewAgentSlots;
+      try {
+        slotsForPayload = getTemplateAgentSlots(jsonInput);
+      } catch {
+        // Let the backend return the authoritative validation error for invalid JSON.
+      }
       const payload = {
         name,
         description,
         template_json: jsonInput,
+        agent_roles_description: buildRolesPayload(agentRolesDescription, slotsForPayload),
       };
       const saved = isNew
         ? await api.post<ProcessTemplate>('/api/process-templates', payload)
@@ -213,6 +253,15 @@ export default function ProcessTemplatesPage() {
             <div className="template-row-meta">
               <span>需要 {template.agent_count} 个 Agent</span>
               <span>{template.agent_slots.join(' / ')}</span>
+            </div>
+            <div className="template-role-description-list">
+              <h3>角色说明</h3>
+              {template.agent_slots.map((slot) => (
+                <div key={slot} className="template-role-description-item">
+                  <strong>{slot}</strong>
+                  <p>{template.agent_roles_description?.[slot] || '暂无说明'}</p>
+                </div>
+              ))}
             </div>
             <pre className="template-json-preview">{template.template_json}</pre>
           </SectionCard>
@@ -305,11 +354,34 @@ export default function ProcessTemplatesPage() {
         <SectionCard title="预览">
           <div className="template-preview-frame">
             <DagView
+              key={previewTasks.map((task) => task.task_code).join('|')}
               tasks={previewTasks}
               selectedTaskId={selectedPreviewTaskId}
               onSelectTask={setSelectedPreviewTaskId}
               missingPredecessorIds={new Set()}
             />
+          </div>
+        </SectionCard>
+      )}
+
+      {previewAgentSlots.length > 0 && (
+        <SectionCard
+          title="角色说明（可选）"
+          description="说明每个 slot 承担的任务和适合绑定的 Agent 类型。角色数量由 JSON 中 tasks 的 assignee 自动决定；如需增删角色，请修改任务的 agent-N slot 后点击预览。"
+        >
+          <div className="template-role-editor-list">
+            {previewAgentSlots.map((slot) => (
+              <div key={slot} className="form-group">
+                <label htmlFor={`template-role-${slot}`}>{slot}</label>
+                <textarea
+                  id={`template-role-${slot}`}
+                  value={agentRolesDescription[slot] || ''}
+                  onChange={(event) => updateRoleDescription(slot, event.target.value)}
+                  rows={3}
+                  placeholder="可选。建议包含：该角色承担的任务、适合什么类型的 Agent。"
+                />
+              </div>
+            ))}
           </div>
         </SectionCard>
       )}

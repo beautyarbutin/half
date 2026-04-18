@@ -2415,6 +2415,67 @@ body {
   line-height: 1.5;
 }
 
+.flow-source-segmented {
+  display: inline-flex;
+  width: 100%;
+  padding: 4px;
+  background: #f1f5f9;
+  border-radius: var(--radius);
+  gap: 2px;
+}
+
+.plan-field .flow-source-segment {
+  position: relative;
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  margin-bottom: 0;
+  padding: 8px 18px;
+  border-radius: var(--radius);
+  font-size: 14px;
+  font-weight: 400;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
+  user-select: none;
+  text-align: center;
+  white-space: normal;
+}
+
+.flow-source-segment input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.flow-source-segment span {
+  position: relative;
+  z-index: 1;
+  pointer-events: none;
+}
+
+.flow-source-segment:hover {
+  color: var(--color-text);
+}
+
+.flow-source-segment:focus-within {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
+.plan-field .flow-source-segment.selected {
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-weight: 600;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
+}
+
 /* ===== Agent Select Cards (Project Form) ===== */
 .agent-select-cards {
   display: grid;
@@ -2608,6 +2669,7 @@ body {
 }
 
 .template-preview-frame {
+  height: 420px;
   min-height: 420px;
   border: 1px solid var(--color-border);
   border-radius: var(--radius);
@@ -2663,15 +2725,59 @@ body {
 }
 
 .template-slot-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 0;
+}
+
+.template-slot-row-main {
   display: grid;
   grid-template-columns: minmax(90px, 140px) 1fr;
   gap: 12px;
   align-items: center;
 }
 
-.template-slot-row span {
+.template-slot-name {
   font-weight: 600;
   color: var(--color-text-secondary);
+}
+
+.template-slot-description {
+  color: var(--color-text-secondary);
+  font-size: 13px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+.template-role-description-list,
+.template-role-editor-list {
+  display: grid;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.template-role-description-list h3 {
+  margin: 0;
+  font-size: 14px;
+}
+
+.template-role-description-item {
+  display: grid;
+  gap: 4px;
+}
+
+.template-role-description-item strong {
+  color: var(--color-text-secondary);
+  font-size: 13px;
+}
+
+.template-role-description-item p {
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-size: 13px;
+  line-height: 1.5;
+  white-space: pre-wrap;
 }
 
 @media (max-width: 768px) {
@@ -2698,6 +2804,10 @@ body {
   .plan-prompt-actions {
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .template-slot-row-main {
+    grid-template-columns: 1fr;
   }
 
   .form-group-half {

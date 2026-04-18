@@ -114,6 +114,7 @@ class ProcessTemplate(Base):
     description = Column(Text)
     agent_count = Column(Integer, nullable=False, default=0)
     agent_slots_json = Column(Text, default="[]")
+    agent_roles_description_json = Column(Text, nullable=True)
     template_json = Column(Text, nullable=False)
     created_by = Column(Integer, ForeignKey("users.id"))
     updated_by = Column(Integer, ForeignKey("users.id"))

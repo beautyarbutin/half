@@ -23,6 +23,8 @@ from routers.process_templates import (
     create_template,
     delete_template,
     generate_template_prompt,
+    get_template,
+    list_templates,
     update_template,
     validate_template_json,
 )
@@ -125,6 +127,45 @@ class ProcessTemplateTests(unittest.TestCase):
         self.assertEqual(response.agent_count, 2)
         self.assertEqual(response.agent_slots, ["agent-1", "agent-2"])
 
+    def test_create_template_saves_normalized_role_descriptions(self):
+        response = create_template(
+            ProcessTemplateCreate(
+                name="",
+                description="",
+                template_json=self._template_json(),
+                agent_roles_description={
+                    "agent-1": "  负责初审，适合代码分析 Agent。  ",
+                    "agent-2": "",
+                    "agent-3": "无效槽位",
+                    "agent-4": 123,
+                },
+            ),
+            self.db,
+            self.user,
+        )
+
+        self.assertEqual(response.agent_roles_description, {"agent-1": "负责初审，适合代码分析 Agent。"})
+        stored = self.db.query(ProcessTemplate).filter(ProcessTemplate.id == response.id).one()
+        self.assertEqual(json.loads(stored.agent_roles_description_json), {"agent-1": "负责初审，适合代码分析 Agent。"})
+
+    def test_list_and_detail_return_role_descriptions(self):
+        created = create_template(
+            ProcessTemplateCreate(
+                name="",
+                description="",
+                template_json=self._template_json(),
+                agent_roles_description={"agent-1": "负责初审"},
+            ),
+            self.db,
+            self.user,
+        )
+
+        detail = get_template(created.id, self.db, self.user)
+        listed = list_templates(self.db, self.user)
+
+        self.assertEqual(detail.agent_roles_description, {"agent-1": "负责初审"})
+        self.assertEqual(listed[0].agent_roles_description, {"agent-1": "负责初审"})
+
     def test_generate_prompt_includes_optional_scenario(self):
         response = generate_template_prompt(
             TemplatePromptRequest(scenario="多人代码审查", description="先初审，再复审，最后汇总。"),
@@ -135,6 +176,8 @@ class ProcessTemplateTests(unittest.TestCase):
         self.assertIn("多人代码审查", response.prompt)
         self.assertIn("## 详细流程需求", response.prompt)
         self.assertIn("先初审，再复审，最后汇总。", response.prompt)
+        self.assertIn("agent_roles", response.prompt)
+        self.assertIn("适合由什么类型的 Agent 担任", response.prompt)
 
     def test_generate_prompt_allows_empty_scenario(self):
         response = generate_template_prompt(
@@ -163,6 +206,79 @@ class ProcessTemplateTests(unittest.TestCase):
         )
         self.assertEqual(response.name, "更新后的流程")
         self.assertEqual(response.description, "更新后的描述")
+
+    def test_update_template_drops_roles_for_removed_slots(self):
+        created = create_template(
+            ProcessTemplateCreate(
+                name="",
+                description="",
+                template_json=self._template_json(),
+                agent_roles_description={"agent-1": "负责初审", "agent-2": "负责复审"},
+            ),
+            self.db,
+            self.user,
+        )
+        updated_json = self._template_json()
+        updated_json["tasks"][1]["assignee"] = "agent-3"
+
+        response = update_template(
+            created.id,
+            ProcessTemplateUpdate(
+                name="",
+                description="",
+                template_json=updated_json,
+                agent_roles_description={"agent-2": "旧角色", "agent-3": "负责复审"},
+            ),
+            self.db,
+            self.user,
+        )
+
+        self.assertEqual(response.agent_slots, ["agent-1", "agent-3"])
+        self.assertEqual(response.agent_roles_description, {"agent-3": "负责复审"})
+
+    def test_update_template_keeps_existing_valid_roles_when_roles_omitted(self):
+        created = create_template(
+            ProcessTemplateCreate(
+                name="",
+                description="",
+                template_json=self._template_json(),
+                agent_roles_description={"agent-1": "负责初审", "agent-2": "负责复审"},
+            ),
+            self.db,
+            self.user,
+        )
+
+        response = update_template(
+            created.id,
+            ProcessTemplateUpdate(name="保留角色说明"),
+            self.db,
+            self.user,
+        )
+
+        self.assertEqual(response.agent_roles_description, {"agent-1": "负责初审", "agent-2": "负责复审"})
+
+    def test_update_template_can_clear_all_role_descriptions(self):
+        created = create_template(
+            ProcessTemplateCreate(
+                name="",
+                description="",
+                template_json=self._template_json(),
+                agent_roles_description={"agent-1": "负责初审", "agent-2": "负责复审"},
+            ),
+            self.db,
+            self.user,
+        )
+
+        response = update_template(
+            created.id,
+            ProcessTemplateUpdate(agent_roles_description={}),
+            self.db,
+            self.user,
+        )
+
+        self.assertEqual(response.agent_roles_description, {})
+        stored = self.db.query(ProcessTemplate).filter(ProcessTemplate.id == created.id).one()
+        self.assertIsNone(stored.agent_roles_description_json)
 
     def test_update_template_rejects_empty_name_when_json_has_no_plan_name(self):
         created = create_template(

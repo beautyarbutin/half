@@ -117,6 +117,7 @@ export interface ProcessTemplate {
   description: string | null;
   agent_count: number;
   agent_slots: string[];
+  agent_roles_description: Record<string, string>;
   template_json: string;
   created_by: number | null;
   updated_by: number | null;

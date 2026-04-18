@@ -135,6 +135,9 @@ def ensure_schema_updates():
         "agent_type_model_map": {
             "display_order": "INTEGER DEFAULT 0",
         },
+        "process_templates": {
+            "agent_roles_description_json": "TEXT",
+        },
     }
 
     with engine.begin() as conn:
