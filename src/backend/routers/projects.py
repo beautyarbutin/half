@@ -19,11 +19,13 @@ from services.project_agents import (
     parse_agent_assignments_json,
     serialize_agent_assignments,
 )
+from services.agents import derive_agent_status
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
 
 DEFAULT_PLANNING_MODE = "balanced"
 VALID_PLANNING_MODES = {"balanced", "quality", "cost_effective", "speed"}
+UNAVAILABLE_AGENT_DETAIL = "Some selected agents are unavailable"
 
 
 def _normalize_planning_mode(value: Optional[str]) -> str:
@@ -51,6 +53,7 @@ class ProjectCreate(BaseModel):
     polling_start_delay_seconds: Optional[int] = None  # None = use global default
     task_timeout_minutes: Optional[int] = None
     planning_mode: str = DEFAULT_PLANNING_MODE
+    template_inputs: Optional[object] = None
 
 
 class ProjectUpdate(BaseModel):
@@ -67,6 +70,7 @@ class ProjectUpdate(BaseModel):
     polling_start_delay_seconds: Optional[int] = None
     task_timeout_minutes: Optional[int] = None
     planning_mode: Optional[str] = None
+    template_inputs: Optional[object] = None
 
 
 class ProjectResponse(UtcDatetimeModel):
@@ -86,6 +90,7 @@ class ProjectResponse(UtcDatetimeModel):
     polling_start_delay_seconds: Optional[int]
     task_timeout_minutes: Optional[int]
     planning_mode: str
+    template_inputs: dict[str, str]
     agent_assignments: list[AgentAssignment]
 
     class Config:
@@ -104,6 +109,36 @@ def _project_agent_ids(project: Project) -> list[int]:
 
 def _project_agent_assignments(project: Project) -> list[AgentAssignment]:
     return [AgentAssignment(**item) for item in parse_agent_assignments_json(project.agent_ids_json)]
+
+
+def _normalize_template_inputs(value: object | None) -> dict[str, str]:
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise HTTPException(status_code=400, detail="template_inputs must be an object")
+    normalized: dict[str, str] = {}
+    for key, raw_value in value.items():
+        if not isinstance(key, str) or not key.strip():
+            raise HTTPException(status_code=400, detail="template_inputs keys must be non-empty strings")
+        if isinstance(raw_value, (dict, list)):
+            raise HTTPException(status_code=400, detail="template_inputs values must be scalar")
+        normalized[key.strip()] = "" if raw_value is None else str(raw_value)
+    return normalized
+
+
+def _parse_template_inputs_json(value: str | None) -> dict[str, str]:
+    if not value:
+        return {}
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+    try:
+        return _normalize_template_inputs(parsed)
+    except HTTPException:
+        return {}
 
 
 
@@ -126,12 +161,24 @@ def _build_project_response(project: Project, next_step: Optional[str] = None, t
         'polling_start_delay_seconds': project.polling_start_delay_seconds,
         'task_timeout_minutes': project.task_timeout_minutes,
         'planning_mode': _normalize_planning_mode(getattr(project, 'planning_mode', None)),
+        'template_inputs': _parse_template_inputs_json(getattr(project, 'template_inputs_json', None)),
     }
     if next_step is not None and task_summary is not None:
         return ProjectDetailResponse(next_step=next_step, task_summary=task_summary, **payload)
     return ProjectResponse(**payload)
 
-def _validate_owned_agent_ids(db: Session, agent_ids: list[int], user: User) -> list[int]:
+
+def _raise_unavailable_agent_error(agent_ids: list[int]) -> None:
+    raise HTTPException(
+        status_code=400,
+        detail={
+            "message": UNAVAILABLE_AGENT_DETAIL,
+            "unavailable_agent_ids": agent_ids,
+        },
+    )
+
+
+def _load_owned_agents(db: Session, agent_ids: list[int], user: User) -> list[Agent]:
     if not agent_ids:
         raise HTTPException(status_code=400, detail='At least one agent must be selected')
     if len(set(agent_ids)) != len(agent_ids):
@@ -142,43 +189,68 @@ def _validate_owned_agent_ids(db: Session, agent_ids: list[int], user: User) -> 
     ).all()
     if len(agents) != len(agent_ids):
         raise HTTPException(status_code=400, detail='Some agent_ids are invalid')
-    return agent_ids
+    agents_by_id = {agent.id: agent for agent in agents}
+    return [agents_by_id[agent_id] for agent_id in agent_ids]
 
 
 def _validate_owned_agent_assignments(
     db: Session,
     assignments: list[dict],
     user: User,
+    allow_keep_ids: set[int] | None = None,
 ) -> list[dict[str, int | bool]]:
     agent_ids = [int(item.get("id")) for item in assignments]
-    _validate_owned_agent_ids(db, agent_ids, user)
+    owned_agents = _load_owned_agents(db, agent_ids, user)
+    keep_ids = allow_keep_ids or set()
+    unavailable_agent_ids = [
+        agent.id
+        for agent in owned_agents
+        if derive_agent_status(agent) == "unavailable" and agent.id not in keep_ids
+    ]
+    if unavailable_agent_ids:
+        _raise_unavailable_agent_error(unavailable_agent_ids)
     return [
         {"id": int(item.get("id")), "co_located": bool(item.get("co_located", False))}
         for item in assignments
     ]
 
 
-def _agent_assignments_from_ids(db: Session, agent_ids: list[int], user: User) -> list[dict[str, int | bool]]:
-    valid_ids = _validate_owned_agent_ids(db, agent_ids, user)
-    agents = db.query(Agent).filter(
-        Agent.id.in_(valid_ids),
-        Agent.created_by == user.id,
-    ).all()
+def _agent_assignments_from_ids(
+    db: Session,
+    agent_ids: list[int],
+    user: User,
+    allow_keep_ids: set[int] | None = None,
+) -> list[dict[str, int | bool]]:
+    agents = _load_owned_agents(db, agent_ids, user)
+    keep_ids = allow_keep_ids or set()
+    unavailable_agent_ids = [
+        agent.id
+        for agent in agents
+        if derive_agent_status(agent) == "unavailable" and agent.id not in keep_ids
+    ]
+    if unavailable_agent_ids:
+        _raise_unavailable_agent_error(unavailable_agent_ids)
     agents_by_id = {agent.id: agent for agent in agents}
     return [
         {"id": agent_id, "co_located": bool(agents_by_id[agent_id].co_located)}
-        for agent_id in valid_ids
+        for agent_id in agent_ids
     ]
 
 
-def _project_assignments_from_body(db: Session, body: ProjectCreate | ProjectUpdate, user: User) -> list[dict[str, int | bool]]:
+def _project_assignments_from_body(
+    db: Session,
+    body: ProjectCreate | ProjectUpdate,
+    user: User,
+    allow_keep_ids: set[int] | None = None,
+) -> list[dict[str, int | bool]]:
     if body.agent_assignments is not None:
         return _validate_owned_agent_assignments(
             db,
             [item.model_dump() for item in body.agent_assignments],
             user,
+            allow_keep_ids=allow_keep_ids,
         )
-    return _agent_assignments_from_ids(db, body.agent_ids or [], user)
+    return _agent_assignments_from_ids(db, body.agent_ids or [], user, allow_keep_ids=allow_keep_ids)
 
 
 
@@ -327,7 +399,7 @@ def create_project(body: ProjectCreate, db: Session = Depends(get_db), user: Use
             body.git_repo_url = validate_git_url(body.git_repo_url)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
-    agent_assignments = _project_assignments_from_body(db, body, user)
+    agent_assignments = _project_assignments_from_body(db, body, user, allow_keep_ids=set())
     _validate_polling_params(
         body.polling_interval_min,
         body.polling_interval_max,
@@ -360,6 +432,7 @@ def create_project(body: ProjectCreate, db: Session = Depends(get_db), user: Use
         polling_start_delay_seconds=polling_snapshot["polling_start_delay_seconds"],
         task_timeout_minutes=polling_snapshot["task_timeout_minutes"],
         planning_mode=_normalize_planning_mode(body.planning_mode),
+        template_inputs_json=json.dumps(_normalize_template_inputs(body.template_inputs), ensure_ascii=False),
     )
     if project.created_by is None:
         raise HTTPException(status_code=500, detail="created_by must not be None")
@@ -386,6 +459,7 @@ def get_project(project_id: int, db: Session = Depends(get_db), user: User = Dep
 def update_project(project_id: int, body: ProjectUpdate, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     project = get_owned_project(db, project_id, user)
     update_data = body.model_dump(exclude_unset=True)
+    allow_keep_ids = set(_project_agent_ids(project))
     if not update_data:
         raise HTTPException(status_code=400, detail="No fields to update")
     if 'git_repo_url' in update_data and update_data['git_repo_url']:
@@ -396,11 +470,21 @@ def update_project(project_id: int, body: ProjectUpdate, db: Session = Depends(g
     if 'agent_assignments' in update_data:
         update_data.pop('agent_ids', None)
         update_data['agent_ids_json'] = serialize_agent_assignments(
-            _validate_owned_agent_assignments(db, update_data.pop('agent_assignments'), user)
+            _validate_owned_agent_assignments(
+                db,
+                update_data.pop('agent_assignments'),
+                user,
+                allow_keep_ids=allow_keep_ids,
+            )
         )
     elif 'agent_ids' in update_data:
         update_data['agent_ids_json'] = serialize_agent_assignments(
-            _agent_assignments_from_ids(db, update_data.pop('agent_ids'), user)
+            _agent_assignments_from_ids(
+                db,
+                update_data.pop('agent_ids'),
+                user,
+                allow_keep_ids=allow_keep_ids,
+            )
         )
     if 'collaboration_dir' in update_data:
         update_data['collaboration_dir'] = _normalize_collab_dir_input(update_data['collaboration_dir'])
@@ -408,6 +492,11 @@ def update_project(project_id: int, body: ProjectUpdate, db: Session = Depends(g
         update_data['task_timeout_minutes'] = get_global_polling_settings(db)["task_timeout_minutes"]
     if 'planning_mode' in update_data:
         update_data['planning_mode'] = _normalize_planning_mode(update_data['planning_mode'])
+    if 'template_inputs' in update_data:
+        update_data['template_inputs_json'] = json.dumps(
+            _normalize_template_inputs(update_data.pop('template_inputs')),
+            ensure_ascii=False,
+        )
     # Validate polling fields against the merged final state so cross-field
     # constraints (min <= max) are enforced even when only one is updated.
     merged_min = update_data.get('polling_interval_min', project.polling_interval_min)

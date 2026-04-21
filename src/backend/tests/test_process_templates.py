@@ -26,8 +26,10 @@ from routers.process_templates import (
     get_template,
     list_templates,
     update_template,
+    validate_required_inputs,
     validate_template_json,
 )
+from routers.projects import ProjectUpdate, get_project, update_project
 
 
 class ProcessTemplateTests(unittest.TestCase):
@@ -119,13 +121,212 @@ class ProcessTemplateTests(unittest.TestCase):
 
     def test_create_template_extracts_slots_and_metadata(self):
         response = create_template(
-            ProcessTemplateCreate(name="", description="", template_json=self._template_json()),
+            ProcessTemplateCreate(
+                name="",
+                description="",
+                prompt_source_text="先初审，再复审。",
+                template_json=self._template_json(),
+                required_inputs=[
+                    {
+                        "key": "test_url",
+                        "label": "测试系统 URL",
+                        "required": True,
+                        "sensitive": False,
+                    }
+                ],
+            ),
             self.db,
             self.user,
         )
         self.assertEqual(response.name, "代码审查流程")
+        self.assertEqual(response.prompt_source_text, "先初审，再复审。")
         self.assertEqual(response.agent_count, 2)
         self.assertEqual(response.agent_slots, ["agent-1", "agent-2"])
+        self.assertEqual(response.required_inputs[0]["key"], "test_url")
+        stored = self.db.query(ProcessTemplate).filter(ProcessTemplate.id == response.id).one()
+        self.assertEqual(json.loads(stored.required_inputs_json)[0]["label"], "测试系统 URL")
+
+    def test_validate_required_inputs_rejects_invalid_structure(self):
+        cases = [
+            ("not-list", "array"),
+            ([{"key": "", "label": "URL", "required": True, "sensitive": False}], "key is required"),
+            ([{"key": "1url", "label": "URL", "required": True, "sensitive": False}], "key is invalid"),
+            ([
+                {"key": "url", "label": "URL", "required": True, "sensitive": False},
+                {"key": "url", "label": "URL 2", "required": False, "sensitive": False},
+            ], "Duplicate"),
+            ([{"key": "url", "label": "", "required": True, "sensitive": False}], "label is required"),
+            ([{"key": "url", "label": "URL", "required": "true", "sensitive": False}], "required must be a boolean"),
+            ([{"key": "url", "label": "URL", "required": True, "sensitive": "false"}], "sensitive must be a boolean"),
+        ]
+        for value, expected in cases:
+            with self.subTest(value=value):
+                with self.assertRaises(HTTPException) as ctx:
+                    validate_required_inputs(value)
+                self.assertEqual(ctx.exception.status_code, 400)
+                self.assertIn(expected, ctx.exception.detail)
+
+    def test_project_update_saves_template_inputs_as_flat_strings(self):
+        response = update_project(
+            20,
+            ProjectUpdate(template_inputs={
+                "test_url": " https://example.test ",
+                "login_password": 12345,
+                "optional_note": None,
+            }),
+            self.db,
+            self.user,
+        )
+
+        self.assertEqual(response.template_inputs, {
+            "test_url": " https://example.test ",
+            "login_password": "12345",
+            "optional_note": "",
+        })
+        detail = get_project(20, self.db, self.user)
+        self.assertEqual(detail.template_inputs["login_password"], "12345")
+
+    def test_project_update_rejects_nested_template_inputs(self):
+        with self.assertRaises(HTTPException) as ctx:
+            update_project(
+                20,
+                ProjectUpdate(template_inputs={"nested": {"bad": True}}),
+                self.db,
+                self.user,
+            )
+        self.assertEqual(ctx.exception.status_code, 400)
+        self.assertIn("scalar", ctx.exception.detail)
+
+    def test_update_template_preserves_and_replaces_required_inputs(self):
+        created = create_template(
+            ProcessTemplateCreate(
+                name="",
+                description="",
+                template_json=self._template_json(),
+                required_inputs=[
+                    {"key": "url", "label": "URL", "required": True, "sensitive": False},
+                ],
+            ),
+            self.db,
+            self.user,
+        )
+
+        preserved = update_template(
+            created.id,
+            ProcessTemplateUpdate(name="只改名称"),
+            self.db,
+            self.user,
+        )
+        self.assertEqual(preserved.required_inputs[0]["key"], "url")
+
+        replaced = update_template(
+            created.id,
+            ProcessTemplateUpdate(required_inputs=[
+                {"key": "password", "label": "密码", "required": True, "sensitive": True},
+            ]),
+            self.db,
+            self.user,
+        )
+        self.assertEqual(replaced.required_inputs, [
+            {"key": "password", "label": "密码", "required": True, "sensitive": True},
+        ])
+
+    def test_list_and_detail_return_prompt_source_text(self):
+        created = create_template(
+            ProcessTemplateCreate(
+                name="",
+                description="",
+                prompt_source_text="详细流程描述",
+                template_json=self._template_json(),
+            ),
+            self.db,
+            self.user,
+        )
+
+        detail = get_template(created.id, self.db, self.user)
+        listed = list_templates(self.db, self.user)
+
+        self.assertEqual(detail.prompt_source_text, "详细流程描述")
+        self.assertEqual(listed[0].prompt_source_text, "详细流程描述")
+        self.assertEqual(detail.required_inputs, [])
+        self.assertEqual(listed[0].required_inputs, [])
+
+    def test_update_template_keeps_prompt_source_text_when_omitted(self):
+        created = create_template(
+            ProcessTemplateCreate(
+                name="",
+                description="",
+                prompt_source_text="原始详细描述",
+                template_json=self._template_json(),
+            ),
+            self.db,
+            self.user,
+        )
+
+        response = update_template(
+            created.id,
+            ProcessTemplateUpdate(name="只改名称"),
+            self.db,
+            self.user,
+        )
+
+        self.assertEqual(response.prompt_source_text, "原始详细描述")
+
+    def test_update_template_can_clear_prompt_source_text(self):
+        created = create_template(
+            ProcessTemplateCreate(
+                name="",
+                description="",
+                prompt_source_text="原始详细描述",
+                template_json=self._template_json(),
+            ),
+            self.db,
+            self.user,
+        )
+
+        response = update_template(
+            created.id,
+            ProcessTemplateUpdate(prompt_source_text=""),
+            self.db,
+            self.user,
+        )
+
+        self.assertEqual(response.prompt_source_text, "")
+
+    def test_update_template_can_replace_prompt_source_text(self):
+        created = create_template(
+            ProcessTemplateCreate(
+                name="",
+                description="",
+                prompt_source_text="原始详细描述",
+                template_json=self._template_json(),
+            ),
+            self.db,
+            self.user,
+        )
+
+        response = update_template(
+            created.id,
+            ProcessTemplateUpdate(prompt_source_text="新的详细描述"),
+            self.db,
+            self.user,
+        )
+
+        self.assertEqual(response.prompt_source_text, "新的详细描述")
+
+    def test_prompt_source_text_serializes_none_in_list_and_detail(self):
+        created = create_template(
+            ProcessTemplateCreate(name="", description="", template_json=self._template_json()),
+            self.db,
+            self.user,
+        )
+
+        detail = get_template(created.id, self.db, self.user)
+        listed = list_templates(self.db, self.user)
+
+        self.assertIsNone(detail.prompt_source_text)
+        self.assertIsNone(listed[0].prompt_source_text)
+        self.assertIsNone(detail.model_dump()["prompt_source_text"])
 
     def test_create_template_saves_normalized_role_descriptions(self):
         response = create_template(

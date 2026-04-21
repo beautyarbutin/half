@@ -235,22 +235,45 @@ def plan_generate_prompt(
             selected_agent_models[agent.id] = selected_model
 
     now = datetime.now(timezone.utc)
-    plan = ProjectPlan(
-        project_id=project_id,
-        source_agent_id=None,
-        plan_type="candidate",
-        prompt_text="",
-        status="pending",
-        source_path="",
-        include_usage=body.include_usage,
-        selected_agent_ids_json=json.dumps(body.selected_agent_ids),
-        selected_agent_models_json=_serialize_selected_agent_models(selected_agent_models),
-        is_selected=False,
+    selected_agent_ids_json = json.dumps(body.selected_agent_ids)
+    selected_agent_models_json = _serialize_selected_agent_models(selected_agent_models)
+    plan = (
+        db.query(ProjectPlan)
+        .filter(
+            ProjectPlan.project_id == project_id,
+            ProjectPlan.plan_type == "candidate",
+            ProjectPlan.status == "pending",
+            ProjectPlan.dispatched_at.is_(None),
+            ProjectPlan.detected_at.is_(None),
+            ProjectPlan.plan_json.is_(None),
+            ProjectPlan.is_selected == False,  # noqa: E712 - SQLAlchemy comparison
+        )
+        .order_by(ProjectPlan.id.desc())
+        .first()
     )
-    db.add(plan)
-    db.flush()
+    if plan is None:
+        plan = ProjectPlan(
+            project_id=project_id,
+            source_agent_id=None,
+            plan_type="candidate",
+            prompt_text="",
+            status="pending",
+            source_path="",
+            include_usage=body.include_usage,
+            selected_agent_ids_json=selected_agent_ids_json,
+            selected_agent_models_json=selected_agent_models_json,
+            is_selected=False,
+        )
+        db.add(plan)
+        db.flush()
+    else:
+        plan.include_usage = body.include_usage
+        plan.selected_agent_ids_json = selected_agent_ids_json
+        plan.selected_agent_models_json = selected_agent_models_json
+        plan.last_error = None
+        plan.updated_at = now
 
-    source_path = _plan_file_path(project, plan.id)
+    source_path = plan.source_path or _plan_file_path(project, plan.id)
     usage_path = _plan_usage_path(project, plan.id) if body.include_usage else None
     prompt, resolved_models = generate_plan_prompt(
         project,

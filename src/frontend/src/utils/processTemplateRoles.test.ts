@@ -4,6 +4,7 @@ import {
   getTemplateAgentSlots,
   parseAgentRolesFromTemplateJson,
   syncRolesForSlots,
+  syncRolesForPreview,
 } from './processTemplateRoles';
 
 function templateJson(overrides: Record<string, unknown> = {}) {
@@ -58,6 +59,32 @@ describe('process template role helpers', () => {
     )).toEqual({
       'agent-1': '保留',
       'agent-3': '新增',
+    });
+  });
+
+  it('updates descriptions that still match the previous JSON prefill', () => {
+    expect(syncRolesForPreview(
+      { 'agent-1': '旧 JSON 初审', 'agent-2': '保留的独立说明' },
+      ['agent-1', 'agent-2'],
+      { 'agent-1': '新 JSON 初审', 'agent-2': '新 JSON 复核' },
+      { 'agent-1': '旧 JSON 初审', 'agent-2': '旧 JSON 复核' },
+      {},
+    )).toEqual({
+      'agent-1': '新 JSON 初审',
+      'agent-2': '保留的独立说明',
+    });
+  });
+
+  it('does not overwrite manually touched descriptions during preview sync', () => {
+    expect(syncRolesForPreview(
+      { 'agent-1': '手工改写', 'agent-2': '' },
+      ['agent-1', 'agent-2'],
+      { 'agent-1': '新 JSON 初审', 'agent-2': '新 JSON 复核' },
+      { 'agent-1': '旧 JSON 初审', 'agent-2': '' },
+      { 'agent-1': true },
+    )).toEqual({
+      'agent-1': '手工改写',
+      'agent-2': '新 JSON 复核',
     });
   });
 

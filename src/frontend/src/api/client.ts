@@ -4,27 +4,61 @@ interface RequestOptions extends RequestInit {
   signal?: AbortSignal;
 }
 
-export function extractApiErrorDetail(message: string): string | null {
+export interface ApiErrorPayload {
+  detail: string | null;
+  unavailableAgentIds: number[];
+}
+
+function normalizeApiErrorIds(value: unknown): number[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return Array.from(
+    new Set(
+      value
+        .map((item) => Number(item))
+        .filter((item) => Number.isInteger(item))
+    )
+  );
+}
+
+export function extractApiErrorPayload(message: string): ApiErrorPayload {
   const match = message.match(/^(?:Error:\s+)?API error \d+:\s*(.*)$/s);
   if (!match) {
-    return null;
+    return { detail: null, unavailableAgentIds: [] };
   }
 
   const rawBody = match[1]?.trim();
   if (!rawBody) {
-    return null;
+    return { detail: null, unavailableAgentIds: [] };
   }
 
   try {
     const parsed = JSON.parse(rawBody);
     if (typeof parsed?.detail === 'string' && parsed.detail.trim()) {
-      return parsed.detail.trim();
+      return {
+        detail: parsed.detail.trim(),
+        unavailableAgentIds: normalizeApiErrorIds(parsed?.unavailable_agent_ids),
+      };
+    }
+    if (parsed?.detail && typeof parsed.detail === 'object') {
+      const nestedDetail = typeof parsed.detail.message === 'string'
+        ? parsed.detail.message.trim()
+        : (typeof parsed.detail.detail === 'string' ? parsed.detail.detail.trim() : null);
+      return {
+        detail: nestedDetail,
+        unavailableAgentIds: normalizeApiErrorIds(parsed.detail.unavailable_agent_ids),
+      };
     }
   } catch {
     // Ignore JSON parse failures and fall back to raw text.
   }
 
-  return rawBody;
+  return { detail: rawBody, unavailableAgentIds: [] };
+}
+
+export function extractApiErrorDetail(message: string): string | null {
+  return extractApiErrorPayload(message).detail;
 }
 
 async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {

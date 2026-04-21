@@ -1,12 +1,39 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { api } from '../api/client';
+import { api, extractApiErrorPayload } from '../api/client';
 import { Agent, Project } from '../types';
 import PageHeader from '../components/PageHeader';
 import SectionCard from '../components/SectionCard';
 import StatusBadge from '../components/StatusBadge';
 import ModelBadge from '../components/ModelBadge';
 import { deriveAgentStatus, getAgentModels, summarizeAgentCapabilities } from '../utils/agents';
+
+const UNAVAILABLE_AGENT_DETAIL = 'Some selected agents are unavailable';
+
+export function isUnavailableAgentSelectionDisabled(agent: Agent, originalAgentIds: number[]) {
+  return deriveAgentStatus(agent).status === 'unavailable' && !originalAgentIds.includes(agent.id);
+}
+
+export function getUnavailableAgentSelectionMessage(unavailableAgents: Agent[]) {
+  if (unavailableAgents.length === 0) {
+    return '不可用的 Agent 无法参与项目。';
+  }
+  return `不可用的 Agent 无法参与项目：${unavailableAgents.map((agent) => agent.name).join('、')}`;
+}
+
+export function triggerAgentCardToggle(disabled: boolean, onToggle: () => void) {
+  if (!disabled) {
+    onToggle();
+  }
+}
+
+export function triggerAgentCardToggleFromKey(key: string, disabled: boolean, onToggle: () => void) {
+  if (disabled || (key !== 'Enter' && key !== ' ')) {
+    return false;
+  }
+  onToggle();
+  return true;
+}
 
 export default function ProjectNewPage() {
   const { id } = useParams<{ id: string }>();
@@ -16,6 +43,7 @@ export default function ProjectNewPage() {
   const [gitRepoUrl, setGitRepoUrl] = useState('');
   const [collaborationDir, setCollaborationDir] = useState('');
   const [selectedAgentIds, setSelectedAgentIds] = useState<number[]>([]);
+  const [originalAgentIds, setOriginalAgentIds] = useState<number[]>([]);
   const [agentCoLocated, setAgentCoLocated] = useState<Record<number, boolean>>({});
   const [agents, setAgents] = useState<Agent[]>([]);
   const [pollingIntervalMin, setPollingIntervalMin] = useState<number | null>(null);
@@ -54,11 +82,13 @@ export default function ProjectNewPage() {
                 const agent = agentList.find((item) => item.id === agentId);
                 return { id: agentId, co_located: Boolean(agent?.co_located) };
               });
+          const initialAgentIds = assignments.map((assignment) => assignment.id);
           setName(project.name || '');
           setGoal(project.goal || '');
           setGitRepoUrl(project.git_repo_url || '');
           setCollaborationDir(project.collaboration_dir || '');
-          setSelectedAgentIds(assignments.map((assignment) => assignment.id));
+          setSelectedAgentIds(initialAgentIds);
+          setOriginalAgentIds(initialAgentIds);
           setAgentCoLocated(Object.fromEntries(assignments.map((assignment) => [assignment.id, assignment.co_located])));
           setPollingIntervalMin(project.polling_interval_min ?? null);
           setPollingIntervalMax(project.polling_interval_max ?? null);
@@ -66,6 +96,7 @@ export default function ProjectNewPage() {
           setPollingStartDelaySeconds(project.polling_start_delay_seconds ?? null);
           setTaskTimeoutMinutes(project.task_timeout_minutes ?? globalPolling?.task_timeout_minutes ?? 10);
         } else if (globalPolling) {
+          setOriginalAgentIds([]);
           // Prefill from global defaults so the user starts with the
           // configured range/delay and can adjust per-project.
           setPollingIntervalMin(globalPolling.polling_interval_min);
@@ -74,6 +105,7 @@ export default function ProjectNewPage() {
           setPollingStartDelaySeconds(globalPolling.polling_start_delay_seconds);
           setTaskTimeoutMinutes(globalPolling.task_timeout_minutes);
         } else {
+          setOriginalAgentIds([]);
           setTaskTimeoutMinutes(10);
         }
       } catch (err) {
@@ -107,11 +139,34 @@ export default function ProjectNewPage() {
     setAgentCoLocated((prev) => ({ ...prev, [agentId]: value }));
   }
 
+  function getUnavailableSelectionError(agentIds: number[]) {
+    const newlySelectedIds = agentIds.filter((agentId) => !originalAgentIds.includes(agentId));
+    const unavailableAgents = agents.filter(
+      (agent) => newlySelectedIds.includes(agent.id) && deriveAgentStatus(agent).status === 'unavailable'
+    );
+    if (unavailableAgents.length === 0) {
+      return null;
+    }
+    return getUnavailableAgentSelectionMessage(unavailableAgents);
+  }
+
+  function handleAgentCardToggle(agent: Agent, disabled: boolean) {
+    triggerAgentCardToggle(disabled, () => toggleAgent(agent.id));
+  }
+
+  function handleAgentCardKeyDown(event: React.KeyboardEvent<HTMLDivElement>, agent: Agent, disabled: boolean) {
+    if (triggerAgentCardToggleFromKey(event.key, disabled, () => toggleAgent(agent.id))) {
+      event.preventDefault();
+    }
+  }
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError('');
     if (!hasAgents) { setError('当前系统还没有 Agent，请先到智能体页面新增。'); return; }
     if (selectedAgentIds.length === 0) { setError('请至少选择 1 个 Agent。'); return; }
+    const unavailableSelectionError = getUnavailableSelectionError(selectedAgentIds);
+    if (unavailableSelectionError) { setError(unavailableSelectionError); return; }
     // Polling param validation (mirrors backend rules)
     if (pollingIntervalMin !== null && (pollingIntervalMin < 1 || pollingIntervalMin > 600)) {
       setError('轮询间隔最小值必须在 1-600 秒之间'); return;
@@ -155,7 +210,13 @@ export default function ProjectNewPage() {
       api.invalidate(`/api/projects/${project.id}`);
       navigate(`/projects/${project.id}`);
     } catch (err) {
-      setError(`${isEditMode ? '更新' : '创建'}失败：${err}`);
+      const apiError = extractApiErrorPayload(String(err));
+      if (apiError.detail === UNAVAILABLE_AGENT_DETAIL) {
+        const unavailableAgents = agents.filter((agent) => apiError.unavailableAgentIds.includes(agent.id));
+        setError(getUnavailableAgentSelectionMessage(unavailableAgents));
+      } else {
+        setError(`${isEditMode ? '更新' : '创建'}失败：${apiError.detail || err}`);
+      }
     } finally { setLoading(false); }
   }
 
@@ -273,11 +334,18 @@ export default function ProjectNewPage() {
           <div className="agent-select-cards">
             {sortedAgents.map((agent) => {
               const selected = selectedAgentIds.includes(agent.id);
+              const disabled = isUnavailableAgentSelectionDisabled(agent, originalAgentIds);
               return (
                 <div
                   key={agent.id}
-                  className={`agent-select-card ${selected ? 'selected' : ''}`}
-                  onClick={() => toggleAgent(agent.id)}
+                  className={`agent-select-card ${selected ? 'selected' : ''} ${disabled ? 'disabled' : ''}`.trim()}
+                  role="checkbox"
+                  aria-checked={selected}
+                  aria-disabled={disabled ? 'true' : 'false'}
+                  tabIndex={disabled ? -1 : 0}
+                  title={disabled ? '不可用，无法参与项目' : undefined}
+                  onClick={() => handleAgentCardToggle(agent, disabled)}
+                  onKeyDown={(event) => handleAgentCardKeyDown(event, agent, disabled)}
                 >
                   <div className="agent-select-card-check">
                     <span className={`check-indicator ${selected ? 'checked' : ''}`} />

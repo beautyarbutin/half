@@ -3,7 +3,7 @@ import re
 
 from sqlalchemy.orm import Session
 
-from models import Agent, Project, Task
+from models import Agent, ProcessTemplate, Project, ProjectPlan, Task
 from services.project_agents import parse_agent_assignments_json
 from services.prompt_settings import normalize_plan_co_location_guidance
 
@@ -169,6 +169,83 @@ def _format_agent_line(agent: Agent, selected_model_name: str | None, co_located
     return f"- {agent.name} ({agent.slug}, {agent.agent_type}, {co_located_text})"
 
 
+def _parse_json_object(value: str | None) -> dict:
+    if not value:
+        return {}
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _parse_required_inputs(value: str | None) -> list[dict[str, object]]:
+    if not value:
+        return []
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(parsed, list):
+        return []
+    normalized: list[dict[str, object]] = []
+    seen_keys: set[str] = set()
+    for item in parsed:
+        if not isinstance(item, dict):
+            return []
+        key = str(item.get("key") or "").strip()
+        label = str(item.get("label") or "").strip()
+        if not key or not label or key in seen_keys:
+            return []
+        if type(item.get("required")) is not bool or type(item.get("sensitive")) is not bool:
+            return []
+        seen_keys.add(key)
+        normalized.append({
+            "key": key,
+            "label": label,
+            "required": bool(item["required"]),
+            "sensitive": bool(item["sensitive"]),
+        })
+    return normalized
+
+
+def _template_id_from_source_path(source_path: str | None) -> int | None:
+    value = (source_path or "").strip()
+    if not value.startswith("template:"):
+        return None
+    raw_id = value.split(":", 1)[1].strip()
+    if not raw_id.isdigit():
+        return None
+    return int(raw_id)
+
+
+def _build_template_inputs_section(db: Session, project: Project, task: Task) -> str:
+    template_inputs = _parse_json_object(getattr(project, "template_inputs_json", None))
+    if not template_inputs:
+        return ""
+
+    plan = db.query(ProjectPlan).filter(ProjectPlan.id == task.plan_id).first()
+    template_id = _template_id_from_source_path(getattr(plan, "source_path", None) if plan else None)
+    if template_id is None:
+        return ""
+    template = db.query(ProcessTemplate).filter(ProcessTemplate.id == template_id).first()
+    if not template:
+        return ""
+    required_inputs = _parse_required_inputs(getattr(template, "required_inputs_json", None))
+    if not required_inputs:
+        return ""
+
+    lines: list[str] = []
+    for item in required_inputs:
+        key = str(item["key"])
+        value = str(template_inputs.get(key) or "").strip()
+        if value:
+            lines.append(f"- {item['label']}: {value}")
+    if not lines:
+        return ""
+    return "## 模版所需信息\n" + "\n".join(lines)
+
+
 def generate_task_prompt(
     db: Session,
     project: Project,
@@ -177,6 +254,8 @@ def generate_task_prompt(
 ) -> str:
     collab = (project.collaboration_dir or "").strip("/")
     task_dir = f"{collab}/{task.task_code}" if collab else task.task_code
+    goal_text = (project.goal or "").strip()
+    template_inputs_section = _build_template_inputs_section(db, project, task)
 
     depends_on = json.loads(task.depends_on_json) if task.depends_on_json else []
     predecessor_lines = ""
@@ -198,9 +277,12 @@ def generate_task_prompt(
     else:
         predecessor_lines = "无前序任务输出"
 
-    prompt = f"""你是项目 [{project.name}] 的执行 Agent。
-
-## 执行前置步骤（必须先做）
+    sections = [f"你是项目 [{project.name}] 的执行 Agent。"]
+    if goal_text:
+        sections.append(f"## 项目任务介绍\n{goal_text}")
+    if template_inputs_section:
+        sections.append(template_inputs_section)
+    sections.append(f"""## 执行前置步骤（必须先做）
 1. 在开始本任务前，必须先在项目仓库目录执行 `git pull`，确保拿到最新的远端状态，否则可能读不到前序任务输出。
 2. 确认上述前序任务目录及其中的 `result.json` 已经存在；若仍缺失，请等待或与项目负责人沟通，不要凭空创作前序内容。
 
@@ -218,6 +300,6 @@ def generate_task_prompt(
 3. 先写入临时文件 `result.json.tmp`，确认写完并 flush 后，再原子重命名为 `result.json`
 4. `result.json` 至少包含：`task_code`、`summary`、`artifacts`，其中 `task_code` 必须为 `{task.task_code}`
 5. 后续任务默认从前序任务目录及其中的 `result.json` 读取成果，不要依赖旧的单文件输出路径约定
-6. 完成后执行 git add、git commit、git push"""
+6. 完成后执行 git add、git commit、git push""")
 
-    return prompt
+    return "\n\n".join(sections)

@@ -6,9 +6,35 @@ BACKEND_DIR = Path(__file__).resolve().parents[1]
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
-from models import Agent, Project, Task
+from models import Agent, ProcessTemplate, Project, ProjectPlan, Task
 from services.prompt_service import generate_plan_prompt, generate_task_prompt, resolve_selected_agent_models
 from services.prompt_settings import DEFAULT_PLAN_CO_LOCATION_GUIDANCE
+
+
+class FakeEmptySession:
+    def query(self, model):
+        raise AssertionError("blank dependency test should not query predecessors")
+
+
+class FakeTemplateSession:
+    def __init__(self, plan=None, template=None):
+        self.plan = plan
+        self.template = template
+        self.model = None
+
+    def query(self, model):
+        self.model = model
+        return self
+
+    def filter(self, *args, **kwargs):
+        return self
+
+    def first(self):
+        if self.model is ProjectPlan:
+            return self.plan
+        if self.model is ProcessTemplate:
+            return self.template
+        return None
 
 
 class PromptServiceTests(unittest.TestCase):
@@ -146,6 +172,104 @@ class PromptServiceTests(unittest.TestCase):
         self.assertIn("result.json.tmp", prompt)
         self.assertIn("原子重命名为 `result.json`", prompt)
         self.assertIn("task_code`、`summary`、`artifacts`", prompt)
+
+    def test_generate_task_prompt_includes_project_goal_section(self):
+        project = Project(
+            id=4,
+            name="Demo",
+            goal="  修复模板路径，让任务介绍进入执行 Prompt。\n验收：模板 apply 后任务能读到项目背景。  ",
+            collaboration_dir="outputs/proj-4-f9a125",
+        )
+        task = Task(
+            project_id=4,
+            task_code="TASK-001",
+            task_name="实现修复",
+            description="修改模板路径",
+            depends_on_json="[]",
+        )
+
+        prompt = generate_task_prompt(FakeEmptySession(), project, task)
+
+        self.assertIn("## 项目任务介绍\n修复模板路径，让任务介绍进入执行 Prompt。\n验收：模板 apply 后任务能读到项目背景。", prompt)
+        self.assertLess(prompt.index("你是项目 [Demo] 的执行 Agent。"), prompt.index("## 项目任务介绍"))
+        self.assertLess(prompt.index("## 项目任务介绍"), prompt.index("## 执行前置步骤"))
+
+    def test_generate_task_prompt_omits_blank_project_goal_section(self):
+        task = Task(
+            project_id=4,
+            task_code="TASK-001",
+            task_name="实现修复",
+            description="修改模板路径",
+            depends_on_json="[]",
+        )
+
+        for goal in (None, "", "   \n  "):
+            with self.subTest(goal=goal):
+                project = Project(id=4, name="Demo", goal=goal, collaboration_dir="outputs/proj-4-f9a125")
+                prompt = generate_task_prompt(FakeEmptySession(), project, task)
+
+                self.assertNotIn("## 项目任务介绍", prompt)
+                self.assertIn("你是项目 [Demo] 的执行 Agent。\n\n## 执行前置步骤", prompt)
+                self.assertNotIn("\n\n\n## 执行前置步骤", prompt)
+
+    def test_generate_task_prompt_includes_template_inputs_for_template_plan(self):
+        project = Project(
+            id=4,
+            name="Demo",
+            goal="执行系统测试",
+            collaboration_dir="outputs/proj-4-f9a125",
+            template_inputs_json='{"login_password":" secret ","extra":"ignore","test_url":"https://example.test"}',
+        )
+        task = Task(
+            project_id=4,
+            plan_id=21,
+            task_code="TASK-001",
+            task_name="执行测试",
+            description="访问系统并输出报告",
+            depends_on_json="[]",
+        )
+        plan = ProjectPlan(id=21, source_path="template:7")
+        template = ProcessTemplate(
+            id=7,
+            required_inputs_json=(
+                '[{"key":"test_url","label":"测试系统 URL","required":true,"sensitive":false},'
+                '{"key":"login_password","label":"登录密码","required":true,"sensitive":true},'
+                '{"key":"report_path","label":"报告输出路径","required":false,"sensitive":false}]'
+            ),
+        )
+
+        prompt = generate_task_prompt(FakeTemplateSession(plan, template), project, task)
+
+        self.assertIn("## 模版所需信息\n- 测试系统 URL: https://example.test\n- 登录密码: secret", prompt)
+        self.assertNotIn("extra", prompt)
+        self.assertNotIn("报告输出路径", prompt)
+        self.assertLess(prompt.index("## 项目任务介绍"), prompt.index("## 模版所需信息"))
+        self.assertLess(prompt.index("## 模版所需信息"), prompt.index("## 执行前置步骤"))
+
+    def test_generate_task_prompt_omits_template_inputs_without_template_source(self):
+        project = Project(
+            id=4,
+            name="Demo",
+            collaboration_dir="outputs/proj-4-f9a125",
+            template_inputs_json='{"test_url":"https://example.test"}',
+        )
+        task = Task(
+            project_id=4,
+            plan_id=21,
+            task_code="TASK-001",
+            task_name="执行测试",
+            description="访问系统并输出报告",
+            depends_on_json="[]",
+        )
+        for source_path in (None, "", "prompt:21", "template:not-a-number"):
+            with self.subTest(source_path=source_path):
+                plan = ProjectPlan(id=21, source_path=source_path)
+                template = ProcessTemplate(
+                    id=7,
+                    required_inputs_json='[{"key":"test_url","label":"测试系统 URL","required":true,"sensitive":false}]',
+                )
+                prompt = generate_task_prompt(FakeTemplateSession(plan, template), project, task)
+                self.assertNotIn("## 模版所需信息", prompt)
 
 
 if __name__ == "__main__":

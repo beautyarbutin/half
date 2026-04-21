@@ -55,6 +55,39 @@ export function syncRolesForSlots(
   return next;
 }
 
+export function syncRolesForPreview(
+  current: AgentRolesDescription,
+  slots: string[],
+  prefill: AgentRolesDescription = {},
+  previousPrefill: AgentRolesDescription = {},
+  touched: Record<string, boolean> = {},
+): AgentRolesDescription {
+  const next: AgentRolesDescription = {};
+  slots.forEach((slot) => {
+    const currentValue = current[slot] || '';
+    const prefillValue = prefill[slot] || '';
+    const previousPrefillValue = previousPrefill[slot] || '';
+
+    if (touched[slot]) {
+      next[slot] = currentValue;
+      return;
+    }
+
+    if (!currentValue.trim()) {
+      next[slot] = prefillValue;
+      return;
+    }
+
+    if (previousPrefillValue && currentValue === previousPrefillValue) {
+      next[slot] = prefillValue || currentValue;
+      return;
+    }
+
+    next[slot] = currentValue;
+  });
+  return next;
+}
+
 export function buildRolesPayload(roles: AgentRolesDescription, slots: string[]): AgentRolesDescription {
   const payload: AgentRolesDescription = {};
   slots.forEach((slot) => {

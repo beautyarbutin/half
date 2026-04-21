@@ -68,6 +68,7 @@ export interface Project {
   git_repo_url: string;
   collaboration_dir?: string | null;
   status: string;
+  created_by?: number | null;
   created_at: string;
   agent_ids?: number[];
   agent_assignments?: ProjectAgentAssignment[];
@@ -77,6 +78,7 @@ export interface Project {
   polling_start_delay_seconds?: number | null;
   task_timeout_minutes?: number | null;
   planning_mode?: string;
+  template_inputs?: Record<string, string>;
   next_step?: string | {
     action: string;
     message: string;
@@ -111,13 +113,22 @@ export interface Plan {
   updated_at?: string;
 }
 
+export interface TemplateRequiredInput {
+  key: string;
+  label: string;
+  required: boolean;
+  sensitive: boolean;
+}
+
 export interface ProcessTemplate {
   id: number;
   name: string;
   description: string | null;
+  prompt_source_text: string | null;
   agent_count: number;
   agent_slots: string[];
   agent_roles_description: Record<string, string>;
+  required_inputs: TemplateRequiredInput[];
   template_json: string;
   created_by: number | null;
   updated_by: number | null;

@@ -19,13 +19,16 @@ from services.project_agents import agent_ids_from_assignments_json
 router = APIRouter(prefix="/api/process-templates", tags=["process_templates"])
 
 AGENT_SLOT_PATTERN = re.compile(r"^agent-[1-9]\d*$")
+REQUIRED_INPUT_KEY_PATTERN = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 
 
 class ProcessTemplateBase(BaseModel):
     name: str = ""
     description: str = ""
+    prompt_source_text: str | None = None
     template_json: str | dict
     agent_roles_description: Optional[dict[str, object]] = None
+    required_inputs: Optional[object] = None
 
 
 class ProcessTemplateCreate(ProcessTemplateBase):
@@ -35,17 +38,21 @@ class ProcessTemplateCreate(ProcessTemplateBase):
 class ProcessTemplateUpdate(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
+    prompt_source_text: Optional[str] = None
     template_json: Optional[str | dict] = None
     agent_roles_description: Optional[dict[str, object]] = None
+    required_inputs: Optional[object] = None
 
 
 class ProcessTemplateResponse(UtcDatetimeModel):
     id: int
     name: str
     description: Optional[str]
+    prompt_source_text: Optional[str]
     agent_count: int
     agent_slots: list[str]
     agent_roles_description: dict[str, str]
+    required_inputs: list[dict[str, object]]
     template_json: str
     created_by: Optional[int]
     updated_by: Optional[int]
@@ -215,6 +222,60 @@ def _normalize_agent_roles_description(value: dict[str, object] | None, slots: l
     return roles
 
 
+def validate_required_inputs(value: object | None) -> list[dict[str, object]]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise HTTPException(status_code=400, detail="required_inputs must be an array")
+    normalized: list[dict[str, object]] = []
+    seen_keys: set[str] = set()
+    for index, item in enumerate(value, start=1):
+        if not isinstance(item, dict):
+            raise HTTPException(status_code=400, detail=f"required_inputs #{index} must be an object")
+        key = str(item.get("key") or "").strip()
+        if not key:
+            raise HTTPException(status_code=400, detail=f"required_inputs #{index} key is required")
+        if not REQUIRED_INPUT_KEY_PATTERN.fullmatch(key):
+            raise HTTPException(status_code=400, detail=f"required_inputs #{index} key is invalid")
+        if key in seen_keys:
+            raise HTTPException(status_code=400, detail=f"Duplicate required_inputs key: {key}")
+        seen_keys.add(key)
+
+        label = str(item.get("label") or "").strip()
+        if not label:
+            raise HTTPException(status_code=400, detail=f"required_inputs {key} label is required")
+
+        required = item.get("required")
+        sensitive = item.get("sensitive")
+        if type(required) is not bool:
+            raise HTTPException(status_code=400, detail=f"required_inputs {key} required must be a boolean")
+        if type(sensitive) is not bool:
+            raise HTTPException(status_code=400, detail=f"required_inputs {key} sensitive must be a boolean")
+
+        normalized.append({
+            "key": key,
+            "label": label,
+            "required": required,
+            "sensitive": sensitive,
+        })
+    return normalized
+
+
+def _parse_required_inputs(value: str | None) -> list[dict[str, object]]:
+    if not value:
+        return []
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(parsed, list):
+        return []
+    try:
+        return validate_required_inputs(parsed)
+    except HTTPException:
+        return []
+
+
 def _build_response(template: ProcessTemplate, user: User) -> ProcessTemplateResponse:
     try:
         slots = json.loads(template.agent_slots_json or "[]")
@@ -226,9 +287,11 @@ def _build_response(template: ProcessTemplate, user: User) -> ProcessTemplateRes
         id=template.id,
         name=template.name,
         description=template.description,
+        prompt_source_text=template.prompt_source_text,
         agent_count=template.agent_count or 0,
         agent_slots=[str(slot) for slot in slots],
         agent_roles_description=_parse_agent_roles_description(template.agent_roles_description_json),
+        required_inputs=_parse_required_inputs(template.required_inputs_json),
         template_json=template.template_json,
         created_by=template.created_by,
         updated_by=template.updated_by,
@@ -310,13 +373,16 @@ def list_templates(db: Session = Depends(get_db), user: User = Depends(get_curre
 def create_template(body: ProcessTemplateCreate, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     name, description, template_json, slots = _derive_metadata(body)
     roles_description = _normalize_agent_roles_description(body.agent_roles_description, slots)
+    required_inputs = validate_required_inputs(body.required_inputs)
     now = datetime.now(timezone.utc)
     template = ProcessTemplate(
         name=name,
         description=description,
+        prompt_source_text=body.prompt_source_text,
         agent_count=len(slots),
         agent_slots_json=json.dumps(slots, ensure_ascii=False),
         agent_roles_description_json=json.dumps(roles_description, ensure_ascii=False) if roles_description else None,
+        required_inputs_json=json.dumps(required_inputs, ensure_ascii=False),
         template_json=template_json,
         created_by=user.id,
         updated_by=user.id,
@@ -349,12 +415,20 @@ def update_template(template_id: int, body: ProcessTemplateUpdate, db: Session =
     if raw_roles_description is None:
         raw_roles_description = _parse_agent_roles_description(template.agent_roles_description_json)
     roles_description = _normalize_agent_roles_description(raw_roles_description, slots)
+    required_inputs = (
+        validate_required_inputs(body.required_inputs)
+        if body.required_inputs is not None
+        else _parse_required_inputs(template.required_inputs_json)
+    )
     template.name = name
     template.description = description
+    if body.prompt_source_text is not None:
+        template.prompt_source_text = body.prompt_source_text
     template.template_json = template_json
     template.agent_count = len(slots)
     template.agent_slots_json = json.dumps(slots, ensure_ascii=False)
     template.agent_roles_description_json = json.dumps(roles_description, ensure_ascii=False) if roles_description else None
+    template.required_inputs_json = json.dumps(required_inputs, ensure_ascii=False)
     template.updated_by = user.id
     template.updated_at = datetime.now(timezone.utc)
     db.commit()

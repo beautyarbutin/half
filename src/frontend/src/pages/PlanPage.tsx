@@ -4,7 +4,8 @@ import { api } from '../api/client';
 import { copyText, getPlanIdToFinalize } from '../contracts';
 import { Agent, Plan, ProcessTemplate, Project } from '../types';
 import { getAgentModels } from '../utils/agents';
-import { FlowSource, getInitialFlowSource } from '../utils/flowSource';
+import { applyTemplatePlan, filterTemplateInputs, getMissingTemplateInputs } from '../utils/applyTemplatePlan';
+import { FlowSource, buildPlanSourcePrefKey, resolveFlowSourcePreference } from '../utils/flowSource';
 import { DEFAULT_PLANNING_MODE, PLANNING_MODE_OPTIONS, PlanningMode, getPlanningModeMeta, normalizePlanningMode } from '../utils/planningMode';
 
 function formatDuration(seconds: number): string {
@@ -42,6 +43,7 @@ export default function PlanPage() {
   const [selectedAgentModels, setSelectedAgentModels] = useState<Record<number, string | null>>({});
   const [selectedTemplateId, setSelectedTemplateId] = useState<number | null>(null);
   const [slotAgentIds, setSlotAgentIds] = useState<Record<string, number | null>>({});
+  const [templateInputs, setTemplateInputs] = useState<Record<string, string>>({});
   const [promptText, setPromptText] = useState('');
   const [currentPlanId, setCurrentPlanId] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
@@ -54,9 +56,13 @@ export default function PlanPage() {
   const autoFinalizeTriggeredRef = useRef<number | null>(null);
   const didAutoSelectFlowSourceRef = useRef(false);
   const didUserSelectFlowSourceRef = useRef(false);
+  const flowSourceProjectIdRef = useRef<string | null>(null);
 
   function updateFlowSource(next: FlowSource) {
     didUserSelectFlowSourceRef.current = true;
+    if (project?.created_by && id) {
+      localStorage.setItem(buildPlanSourcePrefKey(project.created_by, id), next);
+    }
     setFlowSource(next);
   }
 
@@ -79,10 +85,19 @@ export default function PlanPage() {
       setTemplates(templateList);
       setPlanningBrief((current) => current || projectData.goal || '');
       setPlanningMode(normalizePlanningMode(projectData.planning_mode));
+      setTemplateInputs((current) => Object.keys(current).length ? current : (projectData.template_inputs || {}));
+
+      if (flowSourceProjectIdRef.current !== (id || null)) {
+        flowSourceProjectIdRef.current = id || null;
+        didAutoSelectFlowSourceRef.current = false;
+        didUserSelectFlowSourceRef.current = false;
+      }
 
       if (!didAutoSelectFlowSourceRef.current && !didUserSelectFlowSourceRef.current) {
         didAutoSelectFlowSourceRef.current = true;
-        setFlowSource(getInitialFlowSource(projectData.agent_ids, templateList));
+        const storageKey = projectData.created_by && id ? buildPlanSourcePrefKey(projectData.created_by, id) : null;
+        const storedPreference = storageKey ? localStorage.getItem(storageKey) : null;
+        setFlowSource(resolveFlowSourcePreference(storedPreference, projectData.agent_ids, templateList));
       }
 
       const latestPlan = [...planList].reverse()[0] || null;
@@ -129,6 +144,12 @@ export default function PlanPage() {
     && selectedTemplate.agent_slots.every((slot) => typeof slotAgentIds[slot] === 'number')
     && new Set(mappedAgentIds).size === mappedAgentIds.length
   );
+  const planningBriefMissing = !planningBrief.trim();
+  const missingTemplateInputs = useMemo(
+    () => getMissingTemplateInputs(selectedTemplate?.required_inputs || [], templateInputs),
+    [selectedTemplate, templateInputs]
+  );
+  const templateInputsMissing = missingTemplateInputs.length > 0;
 
   useEffect(() => {
     if (!latestPlan || latestPlan.status !== 'running') {
@@ -217,6 +238,7 @@ export default function PlanPage() {
     const template = templates.find((item) => item.id === templateId) || null;
     setSelectedTemplateId(templateId);
     setSlotAgentIds(Object.fromEntries((template?.agent_slots || []).map((slot) => [slot, null])));
+    setTemplateInputs((current) => filterTemplateInputs(template?.required_inputs || [], current));
   }
 
   function updateSlotAgent(slot: string, agentIdValue: string) {
@@ -226,18 +248,23 @@ export default function PlanPage() {
     }));
   }
 
+  function updateTemplateInput(key: string, value: string) {
+    setTemplateInputs((current) => ({ ...current, [key]: value }));
+  }
+
   async function handleApplyTemplate() {
     setActionLoading('apply-template');
     setError('');
     try {
-      if (!selectedTemplate) {
-        throw new Error('请先选择一个流程模版。');
-      }
-      if (!templateMappingComplete) {
-        throw new Error('请完成所有角色映射，且不要重复选择同一个 Agent。');
-      }
-      await api.post(`/api/process-templates/${selectedTemplate.id}/apply/${id}`, {
-        slot_agent_ids: slotAgentIds,
+      await applyTemplatePlan({
+        api,
+        projectId: id,
+        templateId: selectedTemplate?.id ?? null,
+        planningBrief,
+        slotAgentIds,
+        templateMappingComplete,
+        requiredInputs: selectedTemplate?.required_inputs || [],
+        templateInputs,
       });
       api.invalidate(`/api/projects/${id}`);
       navigate(`/projects/${id}/tasks`);
@@ -393,7 +420,7 @@ export default function PlanPage() {
             <div className="plan-card-header">
               <div>
                 <h3>1. 任务介绍</h3>
-                <p>用于生成规划 Prompt。点击“生成 Prompt”时会自动保存当前内容。</p>
+                <p>描述本次项目目标、边界和验收标准；选择任一流程来源继续时会自动保存当前内容。</p>
               </div>
             </div>
             <textarea
@@ -403,7 +430,7 @@ export default function PlanPage() {
               className="import-textarea"
               placeholder="请填写本次项目规划的任务介绍、目标、边界和验收标准。"
             />
-            <div className="helper-text">任务介绍将在生成 Prompt 时自动保存。</div>
+            <div className="helper-text">任务介绍会保存到项目中，并用于后续规划或任务执行上下文。</div>
           </section>
 
           <section className="plan-card">
@@ -610,11 +637,49 @@ export default function PlanPage() {
                   </div>
                 )}
 
+                {selectedTemplate && (selectedTemplate.required_inputs || []).length > 0 && (
+                  <div className="plan-field">
+                    <label>模版所需信息</label>
+                    <div className="template-slot-map">
+                      {(selectedTemplate.required_inputs || []).map((input) => {
+                        const value = templateInputs[input.key] || '';
+                        const missing = input.required && !value.trim();
+                        return (
+                          <div key={input.key} className="template-slot-row">
+                            <div className="template-slot-row-main">
+                              <label htmlFor={`template-input-${input.key}`}>
+                                {input.label}{input.required && <span className="helper-text-error"> *</span>}
+                              </label>
+                              <input
+                                id={`template-input-${input.key}`}
+                                type={input.sensitive ? 'password' : 'text'}
+                                value={value}
+                                onChange={(event) => updateTemplateInput(input.key, event.target.value)}
+                                placeholder={input.label}
+                              />
+                            </div>
+                            <div className="template-slot-description">
+                              {input.key}{input.sensitive ? ' · 敏感输入' : ''}
+                            </div>
+                            {missing && <div className="helper-text helper-text-error">必填</div>}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+
                 <div className="plan-prompt-actions">
+                  {planningBriefMissing && (
+                    <div className="helper-text helper-text-error">请先填写任务介绍。</div>
+                  )}
+                  {templateInputsMissing && (
+                    <div className="helper-text helper-text-error">请填写所有模版所需信息。</div>
+                  )}
                   <button
                     className="btn btn-primary"
                     onClick={handleApplyTemplate}
-                    disabled={actionLoading === 'apply-template' || !templateMappingComplete}
+                    disabled={actionLoading === 'apply-template' || planningBriefMissing || !templateMappingComplete || templateInputsMissing}
                   >
                     {actionLoading === 'apply-template' ? '生成中...' : '下一步'}
                   </button>

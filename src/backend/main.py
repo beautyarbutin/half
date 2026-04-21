@@ -116,6 +116,7 @@ def ensure_schema_updates():
             "polling_start_delay_seconds": "INTEGER",
             "task_timeout_minutes": "INTEGER",
             "planning_mode": "TEXT DEFAULT 'balanced'",
+            "template_inputs_json": "TEXT DEFAULT '{}'",
         },
         "project_plans": {
             "prompt_text": "TEXT",
@@ -137,6 +138,8 @@ def ensure_schema_updates():
         },
         "process_templates": {
             "agent_roles_description_json": "TEXT",
+            "prompt_source_text": "TEXT",
+            "required_inputs_json": "TEXT DEFAULT '[]'",
         },
     }
 

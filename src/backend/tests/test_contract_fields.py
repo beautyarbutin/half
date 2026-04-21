@@ -8,7 +8,8 @@ if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
 from routers.agents import AgentCreate, AgentResponse
-from routers.projects import ProjectCreate, ProjectResponse
+from routers.projects import ProjectCreate, ProjectResponse, ProjectUpdate
+from routers.process_templates import ProcessTemplateCreate, ProcessTemplateResponse, ProcessTemplateUpdate
 from routers.plans import PlanResponse, PlanPromptRequest, PromptResponse
 from routers.tasks import TaskResponse, TaskUpdateRequest
 
@@ -39,6 +40,14 @@ class ContractFieldTests(unittest.TestCase):
         self.assertIn('agent_assignments', ProjectResponse.model_fields)
         self.assertIn('planning_mode', ProjectCreate.model_fields)
         self.assertIn('planning_mode', ProjectResponse.model_fields)
+        self.assertIn('template_inputs', ProjectCreate.model_fields)
+        self.assertIn('template_inputs', ProjectUpdate.model_fields)
+        self.assertIn('template_inputs', ProjectResponse.model_fields)
+
+    def test_process_template_contracts_expose_required_inputs(self):
+        self.assertIn('required_inputs', ProcessTemplateCreate.model_fields)
+        self.assertIn('required_inputs', ProcessTemplateUpdate.model_fields)
+        self.assertIn('required_inputs', ProcessTemplateResponse.model_fields)
 
     def test_plan_contracts_expose_generation_status_fields(self):
         self.assertIn('include_usage', PlanPromptRequest.model_fields)

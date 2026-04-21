@@ -2504,6 +2504,18 @@ body {
   background: #eff6ff;
 }
 
+.agent-select-card.disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+  border-color: var(--color-border);
+  background: #f8fafc;
+}
+
+.agent-select-card.disabled:hover {
+  border-color: var(--color-border);
+  background: #f8fafc;
+}
+
 .agent-select-card-check {
   flex-shrink: 0;
   padding-top: 2px;
@@ -2656,7 +2668,7 @@ body {
 }
 
 .template-json-preview {
-  margin: 16px 0 0;
+  margin: 0;
   padding: 12px;
   max-height: 460px;
   overflow: auto;
@@ -2665,6 +2677,14 @@ body {
   background: #0f172a;
   color: #e2e8f0;
   font-size: 12px;
+  white-space: pre-wrap;
+}
+
+.template-source-description {
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-size: 14px;
+  line-height: 1.6;
   white-space: pre-wrap;
 }
 

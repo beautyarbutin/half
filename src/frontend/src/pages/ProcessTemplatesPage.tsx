@@ -4,13 +4,15 @@ import { api } from '../api/client';
 import DagView from '../components/DagView';
 import PageHeader from '../components/PageHeader';
 import SectionCard from '../components/SectionCard';
-import { ProcessTemplate, Task } from '../types';
+import { copyText } from '../contracts';
+import { ProcessTemplate, Task, TemplateRequiredInput } from '../types';
 import type { AgentRolesDescription } from '../utils/processTemplateRoles';
 import {
   buildRolesPayload,
   getTemplateAgentSlots,
   parseAgentRolesFromTemplateJson,
   syncRolesForSlots,
+  syncRolesForPreview,
 } from '../utils/processTemplateRoles';
 
 function parseTemplateTasks(templateJson: string): Task[] {
@@ -48,6 +50,62 @@ function getTemplateSummary(templateJson: string): { name: string; description: 
   }
 }
 
+const REQUIRED_INPUT_KEY_PATTERN = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
+let requiredInputRowIdSequence = 0;
+
+type RequiredInputDraft = TemplateRequiredInput & {
+  rowId: string;
+};
+
+function createRequiredInputRowId(): string {
+  requiredInputRowIdSequence += 1;
+  return `required-input-${Date.now()}-${requiredInputRowIdSequence}`;
+}
+
+function toRequiredInputDraft(input: TemplateRequiredInput): RequiredInputDraft {
+  return {
+    ...input,
+    rowId: createRequiredInputRowId(),
+  };
+}
+
+function validateRequiredInputs(requiredInputs: TemplateRequiredInput[]): string[] {
+  const errors: string[] = [];
+  const seenKeys = new Set<string>();
+  requiredInputs.forEach((input, index) => {
+    const rowLabel = `第 ${index + 1} 行`;
+    const key = input.key.trim();
+    const label = input.label.trim();
+    if (!key) {
+      errors.push(`${rowLabel} key 不能为空。`);
+    } else if (!REQUIRED_INPUT_KEY_PATTERN.test(key)) {
+      errors.push(`${rowLabel} key 只能使用英文字母、数字、下划线，且不能以数字开头。`);
+    } else if (seenKeys.has(key)) {
+      errors.push(`${rowLabel} key 与前面重复。`);
+    }
+    if (key) {
+      seenKeys.add(key);
+    }
+    if (!label) {
+      errors.push(`${rowLabel} label 不能为空。`);
+    }
+  });
+  return errors;
+}
+
+export async function copyProcessTemplatePrompt(
+  prompt: string,
+  clipboard?: Clipboard | null,
+): Promise<void> {
+  if (!prompt.trim()) {
+    throw new Error('请先生成 Prompt。');
+  }
+  const copied = await copyText(prompt, clipboard);
+  if (!copied) {
+    throw new Error('浏览器未能自动复制，请检查页面权限。');
+  }
+}
+
 export default function ProcessTemplatesPage() {
   const { templateId } = useParams<{ templateId: string }>();
   const location = useLocation();
@@ -64,6 +122,9 @@ export default function ProcessTemplatesPage() {
   const [previewTasks, setPreviewTasks] = useState<Task[]>([]);
   const [previewAgentSlots, setPreviewAgentSlots] = useState<string[]>([]);
   const [agentRolesDescription, setAgentRolesDescription] = useState<AgentRolesDescription>({});
+  const [requiredInputs, setRequiredInputs] = useState<RequiredInputDraft[]>([]);
+  const [lastRolePrefill, setLastRolePrefill] = useState<AgentRolesDescription>({});
+  const [roleDescriptionTouched, setRoleDescriptionTouched] = useState<Record<string, boolean>>({});
   const [selectedPreviewTaskId, setSelectedPreviewTaskId] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -85,18 +146,27 @@ export default function ProcessTemplatesPage() {
           setPreviewTasks([]);
           setPreviewAgentSlots([]);
           setAgentRolesDescription({});
+          setRequiredInputs([]);
+          setLastRolePrefill({});
+          setRoleDescriptionTouched({});
           setSelectedPreviewTaskId(null);
         } else if (templateId) {
           const item = await api.get<ProcessTemplate>(`/api/process-templates/${templateId}`);
           setTemplate(item);
+          setDescriptionInput(item.prompt_source_text || '');
+          setGeneratedPrompt('');
           setJsonInput(item.template_json);
           setName(item.name);
           setDescription(item.description || '');
           const tasks = parseTemplateTasks(item.template_json);
           const slots = item.agent_slots?.length ? item.agent_slots : getTemplateAgentSlots(item.template_json);
+          const prefill = parseAgentRolesFromTemplateJson(item.template_json, slots);
           setPreviewTasks(tasks);
           setPreviewAgentSlots(slots);
-          setAgentRolesDescription(syncRolesForSlots(item.agent_roles_description || {}, slots));
+          setAgentRolesDescription(syncRolesForSlots(item.agent_roles_description || {}, slots, prefill));
+          setRequiredInputs((item.required_inputs || []).map(toRequiredInputDraft));
+          setLastRolePrefill(prefill);
+          setRoleDescriptionTouched({});
         } else if (!isNew) {
           const list = await api.get<ProcessTemplate[]>('/api/process-templates');
           setTemplates(list);
@@ -109,6 +179,8 @@ export default function ProcessTemplatesPage() {
     }
     fetchData();
   }, [isNew, templateId]);
+
+  const requiredInputErrors = useMemo(() => validateRequiredInputs(requiredInputs), [requiredInputs]);
 
   const pageTitle = useMemo(() => {
     if (isNew) return '新建流程模版';
@@ -133,6 +205,15 @@ export default function ProcessTemplatesPage() {
     }
   }
 
+  async function handleCopyPrompt() {
+    setError('');
+    try {
+      await copyProcessTemplatePrompt(generatedPrompt, navigator.clipboard);
+    } catch (err) {
+      setError(`拷贝 Prompt 失败：${err}`);
+    }
+  }
+
   function handlePreview() {
     setError('');
     try {
@@ -151,7 +232,23 @@ export default function ProcessTemplatesPage() {
       }
       setPreviewTasks(tasks);
       setPreviewAgentSlots(slots);
-      setAgentRolesDescription((current) => syncRolesForSlots(current, slots, prefill));
+      setAgentRolesDescription((current) => syncRolesForPreview(
+        current,
+        slots,
+        prefill,
+        lastRolePrefill,
+        roleDescriptionTouched,
+      ));
+      setLastRolePrefill(prefill);
+      setRoleDescriptionTouched((current) => {
+        const next: Record<string, boolean> = {};
+        slots.forEach((slot) => {
+          if (current[slot]) {
+            next[slot] = true;
+          }
+        });
+        return next;
+      });
       setSelectedPreviewTaskId(tasks[0]?.id ?? null);
     } catch (err) {
       setError(`预览失败：${err}`);
@@ -160,6 +257,37 @@ export default function ProcessTemplatesPage() {
 
   function updateRoleDescription(slot: string, value: string) {
     setAgentRolesDescription((current) => ({ ...current, [slot]: value }));
+    setRoleDescriptionTouched((current) => ({ ...current, [slot]: true }));
+  }
+
+  function addRequiredInput() {
+    setRequiredInputs((current) => [
+      ...current,
+      { rowId: createRequiredInputRowId(), key: '', label: '', required: true, sensitive: false },
+    ]);
+  }
+
+  function updateRequiredInput(index: number, patch: Partial<TemplateRequiredInput>) {
+    setRequiredInputs((current) => current.map((item, itemIndex) => (
+      itemIndex === index ? { ...item, ...patch } : item
+    )));
+  }
+
+  function removeRequiredInput(index: number) {
+    setRequiredInputs((current) => current.filter((_, itemIndex) => itemIndex !== index));
+  }
+
+  function moveRequiredInput(index: number, direction: -1 | 1) {
+    setRequiredInputs((current) => {
+      const nextIndex = index + direction;
+      if (nextIndex < 0 || nextIndex >= current.length) {
+        return current;
+      }
+      const next = [...current];
+      const [item] = next.splice(index, 1);
+      next.splice(nextIndex, 0, item);
+      return next;
+    });
   }
 
   async function handleSave() {
@@ -175,8 +303,15 @@ export default function ProcessTemplatesPage() {
       const payload = {
         name,
         description,
+        prompt_source_text: descriptionInput,
         template_json: jsonInput,
         agent_roles_description: buildRolesPayload(agentRolesDescription, slotsForPayload),
+        required_inputs: requiredInputs.map((input) => ({
+          key: input.key.trim(),
+          label: input.label.trim(),
+          required: input.required,
+          sensitive: input.sensitive,
+        })),
       };
       const saved = isNew
         ? await api.post<ProcessTemplate>('/api/process-templates', payload)
@@ -249,22 +384,45 @@ export default function ProcessTemplatesPage() {
         </PageHeader>
         {error && <div className="error-message">{error}</div>}
         <div className="template-detail-layout">
-          <SectionCard title={template.name} description={template.description || '暂无适用场景说明'}>
-            <div className="template-row-meta">
-              <span>需要 {template.agent_count} 个 Agent</span>
-              <span>{template.agent_slots.join(' / ')}</span>
-            </div>
-            <div className="template-role-description-list">
-              <h3>角色说明</h3>
-              {template.agent_slots.map((slot) => (
-                <div key={slot} className="template-role-description-item">
-                  <strong>{slot}</strong>
-                  <p>{template.agent_roles_description?.[slot] || '暂无说明'}</p>
+          <div>
+            <SectionCard title={template.name} description={template.description || '暂无适用场景说明'}>
+              <div className="template-row-meta">
+                <span>需要 {template.agent_count} 个 Agent</span>
+                <span>{template.agent_slots.join(' / ')}</span>
+              </div>
+            </SectionCard>
+            <SectionCard title="详细描述">
+              <p className="template-source-description">{template.prompt_source_text || '暂无说明'}</p>
+            </SectionCard>
+            <SectionCard title="角色说明">
+              <div className="template-role-description-list">
+                {template.agent_slots.map((slot) => (
+                  <div key={slot} className="template-role-description-item">
+                    <strong>{slot}</strong>
+                    <p>{template.agent_roles_description?.[slot] || '暂无说明'}</p>
+                  </div>
+                ))}
+              </div>
+            </SectionCard>
+            {(template.required_inputs || []).length > 0 && (
+              <SectionCard title="必需输入信息">
+                <div className="template-role-description-list">
+                  {(template.required_inputs || []).map((input) => (
+                    <div key={input.key} className="template-role-description-item">
+                      <strong>{input.label}{input.required ? ' *' : ''}</strong>
+                      <p>
+                        {input.key}
+                        {input.sensitive ? ' · 敏感输入' : ''}
+                      </p>
+                    </div>
+                  ))}
                 </div>
-              ))}
-            </div>
-            <pre className="template-json-preview">{template.template_json}</pre>
-          </SectionCard>
+              </SectionCard>
+            )}
+            <SectionCard title="JSON">
+              <pre className="template-json-preview">{template.template_json}</pre>
+            </SectionCard>
+          </div>
           <section className="plan-chart-panel plan-chart-panel-large">
             <DagView
               tasks={previewTasks}
@@ -314,30 +472,35 @@ export default function ProcessTemplatesPage() {
         </div>
       </SectionCard>
 
-      {isNew && (
-        <SectionCard title="2. 输入描述" description="说明流程对应的任务特性、关键 task 和期望 agent 角色">
+      <SectionCard title="2. 输入描述" description="说明流程对应的任务特性、关键 task 和期望 agent 角色">
+        <textarea
+          value={descriptionInput}
+          onChange={(event) => setDescriptionInput(event.target.value)}
+          rows={4}
+          className="import-textarea"
+          placeholder="例如：适用于代码审查，先做初审，再做深度审查，最后汇总结论。"
+        />
+        <div className="plan-prompt-actions">
+          <button className="btn btn-secondary" onClick={handleGeneratePrompt}>生成 Prompt</button>
+          <button
+            className="btn btn-primary"
+            onClick={handleCopyPrompt}
+            disabled={!generatedPrompt.trim()}
+          >
+            拷贝 Prompt
+          </button>
+        </div>
+        {generatedPrompt && (
           <textarea
-            value={descriptionInput}
-            onChange={(event) => setDescriptionInput(event.target.value)}
-            rows={4}
+            value={generatedPrompt}
+            onChange={(event) => setGeneratedPrompt(event.target.value)}
+            rows={10}
             className="import-textarea"
-            placeholder="例如：适用于代码审查，先做初审，再做深度审查，最后汇总结论。"
           />
-          <div className="plan-prompt-actions">
-            <button className="btn btn-secondary" onClick={handleGeneratePrompt}>生成 Prompt</button>
-          </div>
-          {generatedPrompt && (
-            <textarea
-              value={generatedPrompt}
-              onChange={(event) => setGeneratedPrompt(event.target.value)}
-              rows={10}
-              className="import-textarea"
-            />
-          )}
-        </SectionCard>
-      )}
+        )}
+      </SectionCard>
 
-      <SectionCard title={isNew ? '3. 粘贴 JSON' : '2. 编辑 JSON'} description="粘贴外部 agent 生成的流程模版 JSON，可手工调整后预览">
+      <SectionCard title={isNew ? '3. 粘贴 JSON' : '3. 编辑 JSON'} description="粘贴外部 agent 生成的流程模版 JSON，可手工调整后预览">
         <textarea
           value={jsonInput}
           onChange={(event) => setJsonInput(event.target.value)}
@@ -386,9 +549,66 @@ export default function ProcessTemplatesPage() {
         </SectionCard>
       )}
 
+      <SectionCard
+        title="必需输入信息"
+        description="声明使用该模版生成流程前必须补充的结构化信息；敏感输入仅影响 Plan 页输入框显示，不代表加密存储。"
+      >
+        <div className="template-role-editor-list">
+          {requiredInputs.map((input, index) => (
+            <div key={input.rowId} className="form-group">
+              <label>字段 {index + 1}</label>
+              <div className="template-slot-row-main">
+                <input
+                  value={input.key}
+                  onChange={(event) => updateRequiredInput(index, { key: event.target.value })}
+                  placeholder="test_url"
+                />
+                <input
+                  value={input.label}
+                  onChange={(event) => updateRequiredInput(index, { label: event.target.value })}
+                  placeholder="测试系统 URL"
+                />
+              </div>
+              <div className="template-row-meta">
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={input.required}
+                    onChange={(event) => updateRequiredInput(index, { required: event.target.checked })}
+                  />
+                  必填
+                </label>
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={input.sensitive}
+                    onChange={(event) => updateRequiredInput(index, { sensitive: event.target.checked })}
+                  />
+                  敏感输入
+                </label>
+              </div>
+              <div className="plan-prompt-actions">
+                <button className="btn btn-secondary" type="button" onClick={() => moveRequiredInput(index, -1)} disabled={index === 0}>上移</button>
+                <button className="btn btn-secondary" type="button" onClick={() => moveRequiredInput(index, 1)} disabled={index === requiredInputs.length - 1}>下移</button>
+                <button className="btn btn-danger" type="button" onClick={() => removeRequiredInput(index)}>删除</button>
+              </div>
+            </div>
+          ))}
+          {!requiredInputs.length && <div className="helper-text">当前模版没有声明必需输入信息。</div>}
+        </div>
+        {requiredInputErrors.length > 0 && (
+          <div className="helper-text helper-text-error">
+            {requiredInputErrors.map((item) => <div key={item}>{item}</div>)}
+          </div>
+        )}
+        <div className="plan-prompt-actions">
+          <button className="btn btn-secondary" type="button" onClick={addRequiredInput}>添加字段</button>
+        </div>
+      </SectionCard>
+
       <div className="form-actions">
         <button className="btn btn-ghost" onClick={() => navigate(templateId ? `/templates/${templateId}` : '/templates')}>取消</button>
-        <button className="btn btn-primary" onClick={handleSave} disabled={saving || !jsonInput.trim()}>
+        <button className="btn btn-primary" onClick={handleSave} disabled={saving || !jsonInput.trim() || requiredInputErrors.length > 0}>
           {saving ? '保存中...' : '保存'}
         </button>
       </div>
