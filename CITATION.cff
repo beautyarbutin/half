@@ -1,0 +1,21 @@
+cff-version: 1.2.0
+message: "If you use HALF in your research or work, please cite it as below."
+title: "HALF — Human-AI Loop Framework"
+abstract: "A task management console for coordinating multiple AI coding agents (Claude Code, Codex, Cursor, Windsurf) across git-based workflows. Generates DAG-shaped work plans, dispatches prompts for human-in-the-loop execution, and tracks per-agent availability."
+type: software
+authors:
+  - family-names: "Yin"
+    given-names: "Keting"
+    orcid: "https://orcid.org/0000-0001-9674-4132"
+    # Optional: public contact email (uncomment when you decide which to use)
+    # email: "you@example.com"
+repository-code: "https://github.com/keting/half"
+license: Apache-2.0
+version: "0.1.0"
+date-released: "2026-04-22"
+keywords:
+  - ai-agents
+  - coding-agents
+  - human-in-the-loop
+  - agent-orchestration
+  - task-management

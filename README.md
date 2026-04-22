@@ -129,4 +129,4 @@ Screenshots will be added in v0.2.
 
 ## License
 
-MIT License. See [`LICENSE`](./LICENSE).
+Apache License 2.0. See [`LICENSE`](./LICENSE).
