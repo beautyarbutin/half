@@ -1,7 +1,7 @@
 cff-version: 1.2.0
 message: "If you use HALF in your research or work, please cite it as below."
 title: "HALF — Human-AI Loop Framework"
-abstract: "A task management console for coordinating multiple AI coding agents (Claude Code, Codex, Cursor, Windsurf) across git-based workflows. Generates DAG-shaped work plans, dispatches prompts for human-in-the-loop execution, and tracks per-agent availability."
+abstract: "A task management console for coordinating multiple AI coding agents (Claude Code, Codex, Copilot, GLM, Kimi, etc.) across git-based workflows. Generates DAG-shaped work plans, dispatches prompts for human-in-the-loop execution, and tracks per-agent availability."
 type: software
 authors:
   - family-names: "Yin"
