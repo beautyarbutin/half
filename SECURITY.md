@@ -2,7 +2,7 @@
 
 ## Reporting A Vulnerability
 
-Please report security issues privately to `ketingyin@gmail.com`. Do not open
+Please report security issues privately to `osscontact@163.com`. Do not open
 public issues for security problems.
 
 We will acknowledge reports within 5 business days.
