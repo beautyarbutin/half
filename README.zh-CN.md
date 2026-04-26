@@ -124,6 +124,8 @@ docker compose up -d
 ```
 
 打开 `http://localhost:3000`，使用用户名 `admin` 和你设置的密码登录。
+`HALF_ADMIN_PASSWORD` 必须在第一次部署前写入 `.env`；HALF 会用它创建初
+始 `admin` 账号。
 
 ## Demo 项目
 
@@ -136,6 +138,9 @@ docker compose up -d
 这个 Demo 用于首次试用和理解产品形态。它展示了一个已完成任务、两个可执
 行任务，以及两个被下游依赖阻塞的任务。HALF 不会自动执行 agent；你可以
 打开 Demo 查看项目看板、DAG、任务队列和 handoff prompt。
+
+使用用户名 `admin` 和 `.env` 中设置的 `HALF_ADMIN_PASSWORD` 登录后，即可
+在项目列表中打开该 Demo 项目。
 
 如果要实际运行自己的流程，请使用你有写权限的仓库，例如自己的仓库或 fork，
 然后手工把生成的 prompt 分发给对应 agent。若希望首次启动时不创建内置
