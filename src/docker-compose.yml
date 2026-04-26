@@ -9,6 +9,7 @@ services:
       - HALF_ADMIN_PASSWORD=${HALF_ADMIN_PASSWORD:?HALF_ADMIN_PASSWORD is required. See .env.example.}
       - HALF_SECRET_KEY=${HALF_SECRET_KEY:?HALF_SECRET_KEY is required. See .env.example.}
       - HALF_ALLOW_REGISTER=${HALF_ALLOW_REGISTER:-false}
+      - HALF_DEMO_SEED_ENABLED=${HALF_DEMO_SEED_ENABLED:-true}
       - HALF_STRICT_SECURITY=${HALF_STRICT_SECURITY:-true}
     volumes:
       - backend-data:/app/data
