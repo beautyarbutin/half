@@ -139,6 +139,32 @@ docker compose up -d
 ```
 
 Open `http://localhost:3000` and log in as `admin` with the password you set.
+The `HALF_ADMIN_PASSWORD` value must be set in `.env` before the first
+deployment; HALF uses it to create the initial `admin` account.
+
+## Demo Project
+
+On first startup, HALF seeds a browsable demo project by default:
+
+- Project: `(Demo) 修复一个bug`
+- Repository: `https://github.com/keting/half.git`
+- Collaboration directory: `demo/half-demo-collaboration`
+
+The demo is for first-time exploration. It shows one completed task, two ready
+tasks, and two blocked downstream tasks in a DAG workflow. HALF does not
+execute agents automatically; open the demo to inspect the project board, DAG,
+task queue, and handoff prompts.
+
+Log in with username `admin` and the `HALF_ADMIN_PASSWORD` value you set in
+`.env`, then open the demo project from the project list.
+
+To run your own workflow, use a repository you can write to, such as your own
+repository or a fork, then dispatch the generated prompts to your agents
+manually. To start without the built-in demo project, set:
+
+```bash
+HALF_DEMO_SEED_ENABLED=false
+```
 
 ## Local Development
 

@@ -27,6 +27,7 @@ class Settings:
     SECRET_KEY: str = os.getenv("HALF_SECRET_KEY", "example-insecure-secret-placeholder")
     ADMIN_PASSWORD: str = os.getenv("HALF_ADMIN_PASSWORD", "example-insecure-password-placeholder")
     ALLOW_REGISTER: bool = _truthy(os.getenv("HALF_ALLOW_REGISTER", "false"))
+    DEMO_SEED_ENABLED: bool = _truthy(os.getenv("HALF_DEMO_SEED_ENABLED", "true"))
     DATABASE_URL: str = os.getenv(
         "HALF_DATABASE_URL",
         "sqlite:///" + os.getenv("HALF_DB_PATH", os.path.join(os.getcwd(), "half.db")),

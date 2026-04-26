@@ -24,6 +24,7 @@ from routers import users as users_router
 from routers import process_templates as process_templates_router
 from services.polling_service import polling_loop
 from services.prompt_settings import DEFAULT_PLAN_CO_LOCATION_GUIDANCE, PLAN_CO_LOCATION_GUIDANCE_KEY
+from services.demo_seed import seed_demo_project
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("half")
@@ -382,6 +383,9 @@ def init_db():
             db.refresh(admin)
         repair_legacy_agent_owners(db, admin)
         repair_legacy_project_owners(db, admin)
+        if settings.DEMO_SEED_ENABLED:
+            if seed_demo_project(db, admin):
+                logger.info("Demo project seed loaded")
     finally:
         db.close()
 
