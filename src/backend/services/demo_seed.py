@@ -4,7 +4,20 @@ from datetime import timedelta
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from models import Agent, GlobalSetting, ProcessTemplate, Project, ProjectPlan, Task, TaskEvent, User, utcnow
+from models import (
+    Agent,
+    AgentTypeConfig,
+    AgentTypeModelMap,
+    GlobalSetting,
+    ModelDefinition,
+    ProcessTemplate,
+    Project,
+    ProjectPlan,
+    Task,
+    TaskEvent,
+    User,
+    utcnow,
+)
 from services.project_agents import serialize_agent_assignments
 
 DEMO_META_KEY = "demo_project_seed_v1"
@@ -66,6 +79,26 @@ DEMO_AGENTS = [
         "display_order": 3,
     },
 ]
+
+DEMO_AGENT_TYPE_CATALOG = [
+    {
+        "name": "claude-max",
+        "description": "Claude Max subscription agent for deep review, architecture, and complex reasoning tasks.",
+        "models": ["Opus 4.7", "Sonnet 4.6"],
+    },
+    {
+        "name": "chatgpt-pro",
+        "description": "ChatGPT Pro agent for high-complexity implementation, planning, and end-to-end delivery.",
+        "models": ["gpt-5.5", "gpt-5.4"],
+    },
+    {
+        "name": "copilot-pro",
+        "description": "Copilot Pro agent for implementation support, testing, and code review workflows.",
+        "models": ["Opus 4.6", "gpt-5.4", "Sonnet 4.6", "Opus 4.7"],
+    },
+]
+
+LEGACY_DEFAULT_AGENT_TYPES = {"claude", "codex", "cursor", "windsurf"}
 
 DEMO_AGENT_ROLES = {
     "agent-1": "承担代码开发、本地部署自测、修改报告编写、测试与审查意见评估迭代、文档同步及最终代码和报告推送，适合具备开发、测试协调与工程交付能力的 Agent",
@@ -186,6 +219,79 @@ def _ensure_agent(db: Session, admin: User, spec: dict) -> Agent:
     return agent
 
 
+def _ensure_agent_type_catalog(db: Session) -> None:
+    max_order = db.query(AgentTypeConfig.display_order).order_by(
+        AgentTypeConfig.display_order.desc(),
+        AgentTypeConfig.id.desc(),
+    ).first()
+    next_type_order = (max_order[0] + 1) if max_order and max_order[0] is not None else 0
+
+    for type_spec in DEMO_AGENT_TYPE_CATALOG:
+        agent_type = db.query(AgentTypeConfig).filter(AgentTypeConfig.name == type_spec["name"]).first()
+        if agent_type is None:
+            agent_type = AgentTypeConfig(
+                name=type_spec["name"],
+                description=type_spec["description"],
+                display_order=next_type_order,
+            )
+            next_type_order += 1
+            db.add(agent_type)
+            db.flush()
+        elif not agent_type.description:
+            agent_type.description = type_spec["description"]
+
+        for model_order, model_name in enumerate(type_spec["models"]):
+            model_def = db.query(ModelDefinition).filter(ModelDefinition.name == model_name).first()
+            if model_def is None:
+                model_def = ModelDefinition(
+                    name=model_name,
+                    capability=_MODEL_CAPABILITIES.get(model_name),
+                )
+                db.add(model_def)
+                db.flush()
+            elif not model_def.capability:
+                model_def.capability = _MODEL_CAPABILITIES.get(model_name)
+
+            existing_map = db.query(AgentTypeModelMap).filter(
+                AgentTypeModelMap.agent_type_id == agent_type.id,
+                AgentTypeModelMap.model_definition_id == model_def.id,
+            ).first()
+            if existing_map is None:
+                db.add(AgentTypeModelMap(
+                    agent_type_id=agent_type.id,
+                    model_definition_id=model_def.id,
+                    display_order=model_order,
+                ))
+
+
+def _prune_unused_legacy_default_agent_types(db: Session) -> None:
+    """Keep the demo settings catalog focused without deleting user data.
+
+    The app seeds a generic catalog before the demo project is loaded. In demo
+    databases that leaves unused defaults such as cursor/windsurf alongside the
+    three demo agent types. Prune only known legacy defaults, and only when no
+    Agent references them.
+    """
+    used_type_names = {
+        row[0]
+        for row in db.query(Agent.agent_type).filter(Agent.agent_type.isnot(None)).distinct().all()
+    }
+    removable_names = LEGACY_DEFAULT_AGENT_TYPES - used_type_names
+    if not removable_names:
+        return
+
+    removable_types = db.query(AgentTypeConfig).filter(AgentTypeConfig.name.in_(removable_names)).all()
+    removable_type_ids = [agent_type.id for agent_type in removable_types]
+    if not removable_type_ids:
+        return
+
+    db.query(AgentTypeModelMap).filter(
+        AgentTypeModelMap.agent_type_id.in_(removable_type_ids)
+    ).delete(synchronize_session=False)
+    for agent_type in removable_types:
+        db.delete(agent_type)
+
+
 def _template_json() -> dict:
     return {
         "plan_name": "中等改动功能开发与 Bug 修复全流程执行模版",
@@ -288,6 +394,8 @@ def seed_demo_project(db: Session, admin: User) -> bool:
         spec["slug"]: _ensure_agent(db, admin, spec)
         for spec in DEMO_AGENTS
     }
+    _ensure_agent_type_catalog(db)
+    _prune_unused_legacy_default_agent_types(db)
     template = _ensure_template(db, admin)
     db.flush()
 
