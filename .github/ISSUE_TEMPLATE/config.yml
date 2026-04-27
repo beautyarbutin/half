@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security Policy
+    url: https://github.com/keting/half/blob/main/SECURITY.md
+    about: Do not report security vulnerabilities in public issues. Follow the private reporting process in SECURITY.md.
