@@ -7,6 +7,7 @@ import {
   triggerAgentCardToggleFromKey,
 } from './ProjectNewPage';
 import type { Agent } from '../types';
+import { validateGitRepoUrl } from '../utils/gitRepoUrl';
 
 function makeAgent(overrides: Partial<Agent> = {}): Agent {
   return {
@@ -85,5 +86,57 @@ describe('ProjectNewPage unavailable agent logic', () => {
     expect(triggerAgentCardToggleFromKey('Enter', false, onToggle)).toBe(true);
     expect(triggerAgentCardToggleFromKey(' ', false, onToggle)).toBe(true);
     expect(onToggle).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('ProjectNewPage Git repository URL validation', () => {
+  it.each([
+    'https://github.com/org/repo',
+    'https://github.com/org/repo.git',
+    'https://gitlab.com/group/repo.git',
+    'https://gitlab.com/group/subgroup/repo.git',
+    'https://gitee.com/org/repo.git',
+    'https://git.example.com/team/repo.git',
+    'https://fcc.com/team/repo.git',
+    'https://fdic.gov/team/repo.git',
+    'https://git.fcompany.com/team/repo.git',
+    'git@github.com:org/repo.git',
+    'git@gitlab.com:group/repo.git',
+    'ssh://git@github.com/org/repo.git',
+    'ssh://git@github.com:22/org/repo.git',
+    'ssh://git@git.example.com:2222/team/repo.git',
+    'ssh://gitea@git.example.com/team/repo.git',
+    'ssh://repo@git.example.com/team/repo.git',
+  ])('accepts Git repository URL %s', (url) => {
+    expect(validateGitRepoUrl(url)).toBeNull();
+  });
+
+  it.each([
+    'www.baidu.com',
+    'https://www.baidu.com',
+    'https://notgithub.com/test/repo',
+    'https://github.com/org',
+    'https://github.com/org/repo/issues',
+    'https://github.com/org/repo/tree/main',
+    'https://github.com/org/repo/pull/1',
+    'https://gitlab.com/group/repo/-/tree/main',
+    'https://github.com/org/repo.git?tab=readme',
+    'https://token@github.com/org/repo.git',
+    'https://user:pass@git.example.com/team/repo.git',
+    'http://github.com/org/repo.git',
+    'file:///tmp/repo',
+    'ext::ssh -oProxyCommand=calc example.com/repo.git',
+    '-uhttps://github.com/org/repo.git',
+    'ssh://git@[::1]/org/repo.git',
+    'ssh://git@[fe80::1]/org/repo.git',
+    'ssh://git@[fd12:3456::1]/org/repo.git',
+    'ssh://git@localhost/org/repo.git',
+    'ssh://git@127.0.0.1/org/repo.git',
+    'ssh://git@169.254.169.254/org/repo.git',
+    'ssh://-bad@git.example.com/org/repo.git',
+    'ssh://git:secret@git.example.com/org/repo.git',
+    'ssh://git.example.com/org/repo.git',
+  ])('rejects non-clone or unsafe Git repository URL %s', (url) => {
+    expect(validateGitRepoUrl(url)).not.toBeNull();
   });
 });

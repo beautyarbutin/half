@@ -130,6 +130,51 @@ class ProjectAgentAvailabilityTests(unittest.TestCase):
         self.assertEqual(response.json()["detail"]["message"], "Some selected agents are unavailable")
         self.assertEqual(response.json()["detail"]["unavailable_agent_ids"], [self.new_unavailable_agent_id])
 
+    def test_create_project_rejects_invalid_repo_url(self):
+        response = self.client.post(
+            "/api/projects",
+            json={
+                "name": "bad-repo-project",
+                "goal": "x",
+                "git_repo_url": "https://www.baidu.com/",
+                "agent_ids": [self.available_agent_id],
+            },
+            headers=self._headers(),
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("Git repository clone URL", response.json()["detail"])
+
+    def test_create_project_accepts_gitlab_repo_url(self):
+        response = self.client.post(
+            "/api/projects",
+            json={
+                "name": "gitlab-project",
+                "goal": "x",
+                "git_repo_url": "https://gitlab.com/group/repo.git",
+                "agent_ids": [self.available_agent_id],
+            },
+            headers=self._headers(),
+        )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.json()["git_repo_url"], "https://gitlab.com/group/repo.git")
+
+    def test_create_project_accepts_valid_but_unverified_repo_url(self):
+        response = self.client.post(
+            "/api/projects",
+            json={
+                "name": "missing-repo-project",
+                "goal": "x",
+                "git_repo_url": "https://github.com/beautyarbutin/1",
+                "agent_ids": [self.available_agent_id],
+            },
+            headers=self._headers(),
+        )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.json()["git_repo_url"], "https://github.com/beautyarbutin/1")
+
     def test_create_project_allows_short_reset_pending_agent(self):
         response = self.client.post(
             "/api/projects",
@@ -160,6 +205,35 @@ class ProjectAgentAvailabilityTests(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.json()["detail"]["message"], "Some selected agents are unavailable")
         self.assertEqual(response.json()["detail"]["unavailable_agent_ids"], [self.new_unavailable_agent_id])
+
+    def test_update_project_rejects_invalid_repo_url(self):
+        response = self.client.put(
+            f"/api/projects/{self.project_id}",
+            json={"git_repo_url": "https://www.baidu.com/"},
+            headers=self._headers(),
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("Git repository clone URL", response.json()["detail"])
+
+    def test_update_project_allows_clearing_repo_url(self):
+        response = self.client.put(
+            f"/api/projects/{self.project_id}",
+            json={"git_repo_url": "https://github.com/keting/half"},
+            headers=self._headers(),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["git_repo_url"], "https://github.com/keting/half")
+
+        response = self.client.put(
+            f"/api/projects/{self.project_id}",
+            json={"git_repo_url": None},
+            headers=self._headers(),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(response.json()["git_repo_url"])
 
     def test_derive_agent_status_treats_expiry_equal_now_as_unavailable(self):
         boundary = datetime(2026, 4, 20, 12, 0, 0)
