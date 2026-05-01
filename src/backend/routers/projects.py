@@ -26,7 +26,7 @@ router = APIRouter(prefix="/api/projects", tags=["projects"])
 DEFAULT_PLANNING_MODE = "balanced"
 VALID_PLANNING_MODES = {"balanced", "quality", "cost_effective", "speed"}
 UNAVAILABLE_AGENT_DETAIL = "Some selected agents are unavailable"
-GIT_REPO_URL_REQUIRED_DETAIL = "git_repo_url is required"
+GIT_REPO_URL_REQUIRED_DETAIL = "Git 仓库地址不能为空。"
 
 
 def _normalize_planning_mode(value: Optional[str]) -> str:

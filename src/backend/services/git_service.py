@@ -25,6 +25,8 @@ from validators.git_url import validate_git_url as _validate_git_repo_url
 
 logger = logging.getLogger("half.git")
 
+GIT_REPO_URL_REQUIRED_ERROR = "Git 仓库地址不能为空。"
+
 
 _RETRYABLE_GIT_ERROR_MARKERS = (
     "could not resolve host",
@@ -54,10 +56,10 @@ class RepoSyncStatus:
 def validate_git_url(url: str) -> str:
     """Validate a Git repository clone URL for project remotes."""
     if not isinstance(url, str):
-        raise ValueError("git_repo_url is required")
+        raise ValueError(GIT_REPO_URL_REQUIRED_ERROR)
     value = _validate_git_repo_url(url)
     if not value:
-        raise ValueError("git_repo_url is required")
+        raise ValueError(GIT_REPO_URL_REQUIRED_ERROR)
     return value
 
 

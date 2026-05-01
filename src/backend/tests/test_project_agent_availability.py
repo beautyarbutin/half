@@ -149,7 +149,7 @@ class ProjectAgentAvailabilityTests(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 400)
-        self.assertIn("Git repository clone URL", response.json()["detail"])
+        self.assertIn("Git 仓库地址必须", response.json()["detail"])
 
     def test_create_project_rejects_missing_repo_url(self):
         response = self.client.post(
@@ -159,7 +159,7 @@ class ProjectAgentAvailabilityTests(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 400)
-        self.assertEqual(response.json()["detail"], "git_repo_url is required")
+        self.assertEqual(response.json()["detail"], "Git 仓库地址不能为空。")
 
     def test_create_project_rejects_empty_repo_url(self):
         response = self.client.post(
@@ -174,7 +174,7 @@ class ProjectAgentAvailabilityTests(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 400)
-        self.assertEqual(response.json()["detail"], "git_repo_url is required")
+        self.assertEqual(response.json()["detail"], "Git 仓库地址不能为空。")
 
     def test_create_project_accepts_gitlab_repo_url(self):
         response = self.client.post(
@@ -250,7 +250,7 @@ class ProjectAgentAvailabilityTests(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 400)
-        self.assertIn("Git repository clone URL", response.json()["detail"])
+        self.assertIn("Git 仓库地址必须", response.json()["detail"])
 
     def test_update_project_rejects_clearing_repo_url(self):
         response = self.client.put(
@@ -269,7 +269,7 @@ class ProjectAgentAvailabilityTests(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 400)
-        self.assertEqual(response.json()["detail"], "git_repo_url is required")
+        self.assertEqual(response.json()["detail"], "Git 仓库地址不能为空。")
 
         response = self.client.put(
             f"/api/projects/{self.project_id}",
@@ -278,7 +278,16 @@ class ProjectAgentAvailabilityTests(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 400)
-        self.assertEqual(response.json()["detail"], "git_repo_url is required")
+        self.assertEqual(response.json()["detail"], "Git 仓库地址不能为空。")
+
+        response = self.client.put(
+            f"/api/projects/{self.project_id}",
+            json={"git_repo_url": "   "},
+            headers=self._headers(),
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["detail"], "Git 仓库地址不能为空。")
 
     def test_update_project_rejects_legacy_empty_repo_url_final_state(self):
         with self.SessionLocal() as db:
@@ -293,7 +302,7 @@ class ProjectAgentAvailabilityTests(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 400)
-        self.assertEqual(response.json()["detail"], "git_repo_url is required")
+        self.assertEqual(response.json()["detail"], "Git 仓库地址不能为空。")
 
         response = self.client.put(
             f"/api/projects/{self.project_id}",

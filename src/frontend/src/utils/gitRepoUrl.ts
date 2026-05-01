@@ -32,6 +32,74 @@ const PAGE_PATH_SEGMENTS = new Set([
 const PATH_SEGMENT_PATTERN = /^[A-Za-z0-9._~+-]+$/;
 const SSH_USERNAME_PATTERN = /^[A-Za-z0-9._][A-Za-z0-9._-]*$/;
 const HOSTNAME_PATTERN = /^(?=.{1,253}$)[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$/;
+const LEGACY_IPV4_COMPONENT_PATTERN = /^(?:0[xX][0-9A-Fa-f]+|0[0-7]*|[1-9][0-9]*|0)$/;
+
+function parseIpv4Component(component: string) {
+  if (!LEGACY_IPV4_COMPONENT_PATTERN.test(component)) {
+    return null;
+  }
+  const base = component.toLowerCase().startsWith('0x') ? 16 : component.length > 1 && component.startsWith('0') ? 8 : 10;
+  const value = parseInt(component, base);
+  return Number.isFinite(value) ? value : null;
+}
+
+function parseLegacyIpv4(host: string) {
+  if (host.includes(':')) {
+    return null;
+  }
+  const parts = host.split('.');
+  if (parts.length < 1 || parts.length > 4) {
+    return null;
+  }
+  const values = parts.map(parseIpv4Component);
+  if (values.some((value) => value === null)) {
+    return null;
+  }
+
+  const [first, second, third, fourth] = values as number[];
+  if (parts.length === 1) {
+    return first <= 0xffffffff ? first : null;
+  }
+  if (first > 0xff) {
+    return null;
+  }
+  if (parts.length === 2) {
+    return second <= 0xffffff ? first * 0x1000000 + second : null;
+  }
+  if (parts.length === 3) {
+    return second <= 0xff && third <= 0xffff ? first * 0x1000000 + second * 0x10000 + third : null;
+  }
+  return second <= 0xff && third <= 0xff && fourth <= 0xff
+    ? first * 0x1000000 + second * 0x10000 + third * 0x100 + fourth
+    : null;
+}
+
+function parseIpv4MappedIpv6(host: string) {
+  if (!host.startsWith('::ffff:')) {
+    return null;
+  }
+  const rest = host.slice('::ffff:'.length);
+  const dotted = parseLegacyIpv4(rest);
+  if (dotted !== null) {
+    return dotted;
+  }
+  const hextets = /^([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i.exec(rest);
+  return hextets ? parseInt(hextets[1], 16) * 0x10000 + parseInt(hextets[2], 16) : null;
+}
+
+function isBlockedIpv4(value: number) {
+  const first = Math.floor(value / 0x1000000) & 0xff;
+  const second = Math.floor(value / 0x10000) & 0xff;
+  return (
+    first === 0 ||
+    first === 10 ||
+    first === 127 ||
+    first >= 224 ||
+    (first === 169 && second === 254) ||
+    (first === 172 && second >= 16 && second <= 31) ||
+    (first === 192 && second === 168)
+  );
+}
 
 function isPrivateOrLocalHost(hostname: string) {
   const host = hostname.toLowerCase().replace(/^\[|\]$/g, '');
@@ -39,15 +107,14 @@ function isPrivateOrLocalHost(hostname: string) {
     return true;
   }
 
-  if (
-    /^127\./.test(host) ||
-    /^10\./.test(host) ||
-    /^192\.168\./.test(host) ||
-    /^169\.254\./.test(host) ||
-    /^172\.(1[6-9]|2\d|3[0-1])\./.test(host) ||
-    host === '0.0.0.0'
-  ) {
-    return true;
+  const ipv4Mapped = parseIpv4MappedIpv6(host);
+  if (ipv4Mapped !== null) {
+    return isBlockedIpv4(ipv4Mapped);
+  }
+
+  const legacyIpv4 = parseLegacyIpv4(host);
+  if (legacyIpv4 !== null) {
+    return isBlockedIpv4(legacyIpv4);
   }
 
   if (!host.includes(':')) {

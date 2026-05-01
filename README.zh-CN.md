@@ -233,12 +233,15 @@ cd src/frontend && npm test && npm run build
 默认情况下，后端容器无法访问私有 Git 仓库。HALF 不会默认挂载宿主机 SSH
 key。如果你需要访问私有仓库，请将 `src/docker-compose.override.yml.example`
 复制为 `src/docker-compose.override.yml`，并挂载专用 deploy key。
+私有仓库建议使用专用 SSH deploy key、credential helper 或后端容器专门配置
+的凭据；不要把 access token 或 password 写进仓库 URL。
 
 创建和编辑项目时必须填写 Git 仓库地址。HALF 接受仓库根地址和 clone URL，
 例如 `https://github.com/org/repo`、`https://github.com/org/repo.git`、
 `ssh://git@github.com/org/repo.git`、`git@github.com:org/repo.git`。保存时只
 做 URL 格式和安全校验，不证明仓库真实存在，也不证明容器已有访问权限。不要填
-issues、pull、tree、blob 等页面 URL，也不要把凭据或 deploy token 写进 URL。
+issues、pull、tree、blob 等页面 URL，也不要把凭据、access token 或 deploy
+token 内嵌在 URL 的 userinfo、query 或 fragment 中。
 
 ## 生产部署说明
 

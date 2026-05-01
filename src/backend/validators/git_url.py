@@ -12,7 +12,6 @@ _KNOWN_GIT_WEB_HOSTS = {
     "codeberg.org",
     "gitee.com",
 }
-_BLOCKED_SCHEMES = {"file", "ftp", "gopher", "data", "javascript"}
 _PAGE_PATH_SEGMENTS = {
     "actions",
     "blob",
@@ -32,6 +31,7 @@ _PAGE_PATH_SEGMENTS = {
     "wiki",
 }
 _SCP_GIT_PATTERN = re.compile(r"^git@(?P<host>[^:/\s]+):(?P<path>[^\s]+)$", re.IGNORECASE)
+_LEGACY_IPV4_COMPONENT_PATTERN = re.compile(r"^(?:0[xX][0-9A-Fa-f]+|0[0-7]*|[1-9][0-9]*|0)$")
 _HOSTNAME_PATTERN = re.compile(
     r"^(?=.{1,253}$)"
     r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
@@ -40,11 +40,13 @@ _HOSTNAME_PATTERN = re.compile(
 _PATH_SEGMENT_PATTERN = re.compile(r"^[A-Za-z0-9._~+-]+$")
 _SSH_USERNAME_PATTERN = re.compile(r"^[A-Za-z0-9._][A-Za-z0-9._-]*$")
 _GIT_REPO_URL_ERROR = (
-    "git_repo_url must be a Git repository clone URL, for example "
-    "https://github.com/org/repo, https://github.com/org/repo.git, "
-    "ssh://git@github.com/org/repo.git, or git@github.com:org/repo.git. "
-    "Use the repository root or clone URL, not an issues/pull/tree/blob page URL."
+    "Git 仓库地址必须是仓库根地址或 clone URL，例如 "
+    "https://github.com/org/repo、https://github.com/org/repo.git、"
+    "ssh://git@github.com/org/repo.git 或 git@github.com:org/repo.git；"
+    "不要填写 issues/pull/tree/blob 页面、query/fragment、内网地址或带凭据的 URL。"
 )
+_GIT_REPO_URL_REQUIRED_ERROR = "Git 仓库地址不能为空。"
+_GIT_REPO_PRIVATE_NETWORK_ERROR = "Git 仓库地址不能指向本机、内网、link-local 或 metadata 地址。"
 
 
 def _raise_invalid() -> None:
@@ -66,6 +68,61 @@ def _ip_address_literal(hostname: str) -> ipaddress.IPv4Address | ipaddress.IPv6
         return None
 
 
+def _parse_legacy_ipv4_component(component: str) -> int | None:
+    if not _LEGACY_IPV4_COMPONENT_PATTERN.fullmatch(component):
+        return None
+    if component.lower().startswith("0x"):
+        base = 16
+    elif len(component) > 1 and component.startswith("0"):
+        base = 8
+    else:
+        base = 10
+    try:
+        return int(component, base)
+    except ValueError:
+        return None
+
+
+def _legacy_ipv4_address_literal(hostname: str) -> ipaddress.IPv4Address | None:
+    if ":" in hostname:
+        return None
+
+    parts = hostname.split(".")
+    if not 1 <= len(parts) <= 4:
+        return None
+
+    values = [_parse_legacy_ipv4_component(part) for part in parts]
+    if any(value is None for value in values):
+        return None
+
+    first, *rest = values
+    if first is None or first > 0xFF:
+        if len(values) == 1 and first is not None and first <= 0xFFFFFFFF:
+            return ipaddress.IPv4Address(first)
+        return None
+
+    if len(values) == 1:
+        return ipaddress.IPv4Address(first)
+    if len(values) == 2 and rest[0] is not None and rest[0] <= 0xFFFFFF:
+        return ipaddress.IPv4Address((first << 24) | rest[0])
+    if len(values) == 3 and rest[0] is not None and rest[1] is not None and rest[0] <= 0xFF and rest[1] <= 0xFFFF:
+        return ipaddress.IPv4Address((first << 24) | (rest[0] << 16) | rest[1])
+    if len(values) == 4 and all(value is not None and value <= 0xFF for value in values):
+        return ipaddress.IPv4Address(
+            (values[0] << 24) | (values[1] << 16) | (values[2] << 8) | values[3]
+        )
+    return None
+
+
+def _address_for_safety_check(hostname: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+    ip = _ip_address_literal(hostname)
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped:
+        return ip.ipv4_mapped
+    if ip is not None:
+        return ip
+    return _legacy_ipv4_address_literal(hostname)
+
+
 def _is_valid_dns_hostname(hostname: str) -> bool:
     if ":" in hostname:
         return False
@@ -80,7 +137,7 @@ def _is_private_or_local_host(hostname: str) -> bool:
     if hostname in {"localhost", "localhost.localdomain"} or hostname.endswith(".localhost"):
         return True
 
-    ip = _ip_address_literal(hostname)
+    ip = _address_for_safety_check(hostname)
     if ip is None:
         return False
     return any(
@@ -98,7 +155,7 @@ def _is_private_or_local_host(hostname: str) -> bool:
 def _validate_host(hostname: str | None) -> str:
     host = _normalize_host(hostname)
     if _is_private_or_local_host(host):
-        raise ValueError("Git repository URLs pointing to private or local networks are not allowed")
+        raise ValueError(_GIT_REPO_PRIVATE_NETWORK_ERROR)
     if _ip_address_literal(host) is None and not _is_valid_dns_hostname(host):
         _raise_invalid()
     return host
@@ -171,7 +228,7 @@ def validate_git_url(url: str | None) -> str | None:
     parsed = urlparse(stripped)
     scheme = parsed.scheme.lower()
 
-    if scheme in _BLOCKED_SCHEMES or scheme not in ("https", "ssh"):
+    if scheme not in ("https", "ssh"):
         _raise_invalid()
     host = _validate_host(parsed.hostname)
     if parsed.params or parsed.query or parsed.fragment:

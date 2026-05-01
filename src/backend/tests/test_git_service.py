@@ -39,6 +39,14 @@ class GitServiceValidateGitUrlTests(unittest.TestCase):
             with self.subTest(url=url):
                 self.assertEqual(git_service.validate_git_url(f" {url} "), url)
 
+    def test_rejects_missing_or_non_string_git_urls(self):
+        invalid_values = [None, "", "   ", 42]
+
+        for value in invalid_values:
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(ValueError, "Git 仓库地址不能为空"):
+                    git_service.validate_git_url(value)  # type: ignore[arg-type]
+
     def test_rejects_non_clone_or_unsafe_git_urls(self):
         invalid_urls = [
             "www.baidu.com",
@@ -57,6 +65,15 @@ class GitServiceValidateGitUrlTests(unittest.TestCase):
             "https://-bad.example.com/org/repo.git",
             "https://bad-.example.com/org/repo.git",
             "https://bad..example.com/org/repo.git",
+            "https://127.1/org/repo.git",
+            "https://10.1/org/repo.git",
+            "https://172.16.1/org/repo.git",
+            "https://192.168.1/org/repo.git",
+            "https://169.254.1/org/repo.git",
+            "https://2130706433/org/repo.git",
+            "https://0x7f000001/org/repo.git",
+            "https://012.1/org/repo.git",
+            "https://0xa9fea9fe/org/repo.git",
             "http://github.com/org/repo.git",
             "file:///tmp/repo",
             "ext::ssh -oProxyCommand=calc example.com/repo.git",
@@ -64,8 +81,11 @@ class GitServiceValidateGitUrlTests(unittest.TestCase):
             "ssh://git@[::1]/org/repo.git",
             "ssh://git@[fe80::1]/org/repo.git",
             "ssh://git@[fd12:3456::1]/org/repo.git",
+            "ssh://git@[::ffff:127.0.0.1]/org/repo.git",
+            "ssh://git@[::ffff:10.0.0.1]/org/repo.git",
             "ssh://git@localhost/org/repo.git",
             "ssh://git@127.0.0.1/org/repo.git",
+            "ssh://git@127.1/org/repo.git",
             "ssh://git@169.254.169.254/org/repo.git",
             "ssh://git@bad host/org/repo.git",
             "ssh://git@bad_host.example.com/org/repo.git",
@@ -78,6 +98,7 @@ class GitServiceValidateGitUrlTests(unittest.TestCase):
             with self.subTest(url=url):
                 with self.assertRaises(ValueError):
                     git_service.validate_git_url(url)
+
 
 class GitServiceWorkspaceFallbackTests(unittest.TestCase):
     def setUp(self):

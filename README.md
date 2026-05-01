@@ -253,6 +253,9 @@ Out of the box, the backend container cannot reach private Git repositories.
 HALF does not mount host SSH keys by default. If you need private repository
 access, copy `src/docker-compose.override.yml.example` to
 `src/docker-compose.override.yml` and mount a dedicated deploy key.
+For private repositories, use a dedicated SSH deploy key, credential helper, or
+backend-managed credentials; do not put access tokens or passwords in the
+repository URL.
 
 Project creation and editing require a Git repository URL. HALF accepts
 repository roots and clone URLs such as `https://github.com/org/repo`,
@@ -260,7 +263,8 @@ repository roots and clone URLs such as `https://github.com/org/repo`,
 `git@github.com:org/repo.git`. Save-time validation checks URL shape and
 safety only; it does not prove that the repository exists or that the container
 has access. Do not enter issues, pull request, tree, or blob page URLs, and do
-not embed credentials or deploy tokens in the URL.
+not embed credentials, access tokens, or deploy tokens in the URL's userinfo,
+query, or fragment.
 
 ## Production Deployment Notes
 
