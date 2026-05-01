@@ -87,7 +87,8 @@ docker compose ps
 2. 填写表单：
    - **项目名称**：你的项目名称
    - **项目目标**：你想完成的描述
-   - **Git 仓库地址**：仓库 URL，如 `https://github.com/your/repo.git`
+   - **Git 仓库地址**：必填的仓库根地址或 clone URL，如
+     `https://github.com/your/repo` 或 `https://github.com/your/repo.git`
    - **协作目录**：输出的相对路径，如 `projects/my-project`
    - **轮询间隔**：检查任务完成的频率
    - **任务超时**：任务超时时间（分钟）
@@ -192,7 +193,14 @@ HALF_DEMO_SEED_ENABLED=true docker compose up -d
 `src/docker-compose.override.yml` 并挂载专用 deploy key。不要将整个
 `~/.ssh` 目录挂载到容器中。
 
-或者，在仓库 URL 中使用 HTTPS 和部署令牌。
+HALF 接受仓库根地址和 clone URL，例如 `https://github.com/org/repo`、
+`https://github.com/org/repo.git`、`ssh://git@github.com/org/repo.git`、
+`git@github.com:org/repo.git`。不要填写 issues、pull、tree、blob 等页面
+URL。带有不安全协议、query、fragment、内嵌凭据或 deploy token、本地/内网
+地址的 URL 会被拒绝。
+
+保存时只做 URL 格式和安全校验，不证明仓库真实存在，也不证明后端容器已有访问
+权限。如果仓库不存在或容器缺少凭据，后续 Git 同步和轮询会失败。
 
 ## 下一步
 

@@ -1,5 +1,6 @@
 export const GIT_REPO_URL_ERROR =
   'Git 仓库地址必须是仓库根地址或 clone URL，例如 https://github.com/org/repo、https://github.com/org/repo.git、ssh://git@github.com/org/repo.git 或 git@github.com:org/repo.git；不要填写 issues/pull/tree/blob 页面或内网地址。';
+export const GIT_REPO_URL_REQUIRED_ERROR = 'Git 仓库地址不能为空。';
 
 const KNOWN_GIT_WEB_HOSTS = new Set([
   'github.com',
@@ -92,10 +93,10 @@ function isValidRepoPath(hostname: string, pathname: string) {
   return repoName.endsWith('.git') || KNOWN_GIT_WEB_HOSTS.has(hostname.toLowerCase());
 }
 
-export function validateGitRepoUrl(value: string | null | undefined) {
+export function validateGitRepoUrl(value: string | null | undefined, options: { required?: boolean } = {}) {
   const trimmed = (value || '').trim();
   if (!trimmed) {
-    return null;
+    return options.required ? GIT_REPO_URL_REQUIRED_ERROR : null;
   }
 
   if (trimmed.startsWith('-') || trimmed.toLowerCase().startsWith('ext::')) {

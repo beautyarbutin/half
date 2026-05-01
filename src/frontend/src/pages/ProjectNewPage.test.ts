@@ -7,7 +7,7 @@ import {
   triggerAgentCardToggleFromKey,
 } from './ProjectNewPage';
 import type { Agent } from '../types';
-import { validateGitRepoUrl } from '../utils/gitRepoUrl';
+import { GIT_REPO_URL_ERROR, GIT_REPO_URL_REQUIRED_ERROR, validateGitRepoUrl } from '../utils/gitRepoUrl';
 
 function makeAgent(overrides: Partial<Agent> = {}): Agent {
   return {
@@ -90,6 +90,19 @@ describe('ProjectNewPage unavailable agent logic', () => {
 });
 
 describe('ProjectNewPage Git repository URL validation', () => {
+  it('allows an empty URL only when the field is optional', () => {
+    expect(validateGitRepoUrl('')).toBeNull();
+  });
+
+  it('shows a distinct required error for an empty project repository URL', () => {
+    expect(validateGitRepoUrl('', { required: true })).toBe(GIT_REPO_URL_REQUIRED_ERROR);
+    expect(validateGitRepoUrl('   ', { required: true })).toBe(GIT_REPO_URL_REQUIRED_ERROR);
+  });
+
+  it('keeps format errors distinct from the required error', () => {
+    expect(validateGitRepoUrl('www.baidu.com', { required: true })).toBe(GIT_REPO_URL_ERROR);
+  });
+
   it.each([
     'https://github.com/org/repo',
     'https://github.com/org/repo.git',

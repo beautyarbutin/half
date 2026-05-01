@@ -180,7 +180,7 @@ After logging in:
    pre-loaded with sample tasks. Review it to understand the task board, DAG
    view, and handoff prompts.
 2. **Create Your Own Project** - Click "新建项目" and configure:
-   - Git repository URL (must be accessible from the container)
+   - Git repository URL (required; use the repository root or clone URL)
    - Collaboration directory (relative path for outputs)
    - **At least one Agent must be selected** from the pre-seeded demo agents
    - Polling intervals and timeout settings
@@ -253,6 +253,14 @@ Out of the box, the backend container cannot reach private Git repositories.
 HALF does not mount host SSH keys by default. If you need private repository
 access, copy `src/docker-compose.override.yml.example` to
 `src/docker-compose.override.yml` and mount a dedicated deploy key.
+
+Project creation and editing require a Git repository URL. HALF accepts
+repository roots and clone URLs such as `https://github.com/org/repo`,
+`https://github.com/org/repo.git`, `ssh://git@github.com/org/repo.git`, and
+`git@github.com:org/repo.git`. Save-time validation checks URL shape and
+safety only; it does not prove that the repository exists or that the container
+has access. Do not enter issues, pull request, tree, or blob page URLs, and do
+not embed credentials or deploy tokens in the URL.
 
 ## Production Deployment Notes
 

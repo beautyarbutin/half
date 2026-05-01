@@ -58,8 +58,8 @@ export default function ProjectNewPage() {
   const navigate = useNavigate();
 
   const hasAgents = agents.length > 0;
-  const gitRepoUrlError = validateGitRepoUrl(gitRepoUrl);
-  const canSubmit = hasAgents && selectedAgentIds.length > 0 && name.trim() && goal.trim() && !gitRepoUrlError && !loading;
+  const gitRepoUrlError = validateGitRepoUrl(gitRepoUrl, { required: true });
+  const canSubmit = Boolean(hasAgents && selectedAgentIds.length > 0 && name.trim() && goal.trim() && !gitRepoUrlError && !loading);
   const pageTitle = isEditMode ? '编辑项目' : '新建项目';
 
   useEffect(() => {
@@ -259,6 +259,7 @@ export default function ProjectNewPage() {
                 onChange={(e) => setGitRepoUrl(e.target.value)}
                 placeholder="例如：git@github.com:org/repo.git"
                 className="input-mono"
+                required
                 aria-invalid={gitRepoUrlError ? 'true' : 'false'}
                 aria-describedby={gitRepoUrlError ? 'repo-error' : undefined}
               />

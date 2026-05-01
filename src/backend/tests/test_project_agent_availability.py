@@ -122,7 +122,12 @@ class ProjectAgentAvailabilityTests(unittest.TestCase):
     def test_create_project_rejects_unavailable_agent(self):
         response = self.client.post(
             "/api/projects",
-            json={"name": "bad-project", "goal": "x", "agent_ids": [self.new_unavailable_agent_id]},
+            json={
+                "name": "bad-project",
+                "goal": "x",
+                "git_repo_url": "https://github.com/keting/half",
+                "agent_ids": [self.new_unavailable_agent_id],
+            },
             headers=self._headers(),
         )
 
@@ -144,6 +149,31 @@ class ProjectAgentAvailabilityTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 400)
         self.assertIn("Git repository clone URL", response.json()["detail"])
+
+    def test_create_project_rejects_missing_repo_url(self):
+        response = self.client.post(
+            "/api/projects",
+            json={"name": "missing-repo-url-project", "goal": "x", "agent_ids": [self.available_agent_id]},
+            headers=self._headers(),
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["detail"], "git_repo_url is required")
+
+    def test_create_project_rejects_empty_repo_url(self):
+        response = self.client.post(
+            "/api/projects",
+            json={
+                "name": "empty-repo-url-project",
+                "goal": "x",
+                "git_repo_url": "   ",
+                "agent_ids": [self.available_agent_id],
+            },
+            headers=self._headers(),
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["detail"], "git_repo_url is required")
 
     def test_create_project_accepts_gitlab_repo_url(self):
         response = self.client.post(
@@ -178,7 +208,12 @@ class ProjectAgentAvailabilityTests(unittest.TestCase):
     def test_create_project_allows_short_reset_pending_agent(self):
         response = self.client.post(
             "/api/projects",
-            json={"name": "pending-project", "goal": "x", "agent_ids": [self.short_reset_agent_id]},
+            json={
+                "name": "pending-project",
+                "goal": "x",
+                "git_repo_url": "https://github.com/keting/half",
+                "agent_ids": [self.short_reset_agent_id],
+            },
             headers=self._headers(),
         )
 
@@ -216,7 +251,7 @@ class ProjectAgentAvailabilityTests(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn("Git repository clone URL", response.json()["detail"])
 
-    def test_update_project_allows_clearing_repo_url(self):
+    def test_update_project_rejects_clearing_repo_url(self):
         response = self.client.put(
             f"/api/projects/{self.project_id}",
             json={"git_repo_url": "https://github.com/keting/half"},
@@ -232,8 +267,17 @@ class ProjectAgentAvailabilityTests(unittest.TestCase):
             headers=self._headers(),
         )
 
-        self.assertEqual(response.status_code, 200)
-        self.assertIsNone(response.json()["git_repo_url"])
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["detail"], "git_repo_url is required")
+
+        response = self.client.put(
+            f"/api/projects/{self.project_id}",
+            json={"git_repo_url": ""},
+            headers=self._headers(),
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["detail"], "git_repo_url is required")
 
     def test_derive_agent_status_treats_expiry_equal_now_as_unavailable(self):
         boundary = datetime(2026, 4, 20, 12, 0, 0)
