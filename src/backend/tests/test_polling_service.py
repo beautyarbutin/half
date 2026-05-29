@@ -16,9 +16,14 @@ if str(BACKEND_DIR) not in sys.path:
 from database import Base
 from models import Project, Task, ProjectPlan, TaskEvent
 from services.git_service import RepoSyncStatus
+from services.issue_review_loop import FLOW_TYPE
 from services.polling_service import (
     GIT_REPO_ACCESS_ERROR_MESSAGE,
+    GIT_REPO_NETWORK_ERROR_MESSAGE,
+    GIT_REPO_NOT_FOUND_ERROR_MESSAGE,
+    GIT_REPO_SSH_PUBLICKEY_ERROR_MESSAGE,
     _task_usage_path,
+    format_git_repo_access_error,
     get_effective_task_timeout_minutes,
     poll_project,
 )
@@ -123,6 +128,90 @@ class PollingServiceTests(unittest.TestCase):
         db.refresh(plan)
         return project, plan
 
+    def _seed_issue_review_loop_task(self, task_code: str) -> tuple[Project, Task]:
+        db = self.SessionLocal()
+        self.addCleanup(db.close)
+
+        project = Project(
+            id=71,
+            name="Issue Review Loop",
+            git_repo_url="git@github.com:example-org/example-repo.git",
+            collaboration_dir="outputs/proj-71-loop",
+            status="executing",
+            task_timeout_minutes=20,
+        )
+        plan = ProjectPlan(
+            id=72,
+            project_id=71,
+            status="final",
+            is_selected=True,
+            plan_json=json.dumps({"flow_type": FLOW_TYPE, "tasks": []}),
+        )
+        task = Task(
+            id=73,
+            project_id=71,
+            plan_id=72,
+            task_code=task_code,
+            task_name=f"{task_code} loop task",
+            status="running",
+            expected_output_path=f"outputs/proj-71-loop/{task_code}/result.json",
+            dispatched_at=datetime.now(timezone.utc) - timedelta(minutes=11),
+            timeout_minutes=10,
+        )
+        db.add_all([project, plan, task])
+        db.commit()
+        db.refresh(project)
+        db.refresh(task)
+        return project, task
+
+    def _loop_flow_state(self, task_002_state: str = "waiting_review") -> dict:
+        return {
+            "schema_version": 1,
+            "flow_type": FLOW_TYPE,
+            "current_round": 1,
+            "round_id": "round-001-abc123",
+            "phase": "awaiting_review",
+            "work_branch": "issue-123",
+            "head_commit": "abc123",
+            "max_review_rounds": 3,
+            "task_states": {
+                "TASK-001": "completed",
+                "TASK-002": task_002_state,
+                "TASK-003": "unlocked",
+                "TASK-004": "unlocked",
+                "TASK-005": "frozen",
+            },
+        }
+
+    def _loop_review(self, approve_merge: bool = True) -> dict:
+        return {
+            "round": 1,
+            "round_id": "round-001-abc123",
+            "work_branch": "issue-123",
+            "head_commit": "abc123",
+            "approve_merge": approve_merge,
+        }
+
+    def _poll_loop_task_with_files(self, project: Project, files: dict[str, str | None]) -> Task:
+        def read_file(_project_id, path, **_kwargs):
+            return files.get(path)
+
+        with patch(
+            "services.polling_service.git_service.ensure_repo_sync",
+            return_value=RepoSyncStatus(repo_dir="/tmp/repo", fetched=True, pulled=True, remote_ready=True),
+        ), patch(
+            "services.polling_service.git_service.read_file",
+            side_effect=read_file,
+        ), patch(
+            "services.polling_service.git_service.file_exists",
+            return_value=False,
+        ):
+            poll_project(self.SessionLocal(), project)
+
+        verify_db = self.SessionLocal()
+        self.addCleanup(verify_db.close)
+        return verify_db.query(Task).filter(Task.project_id == project.id).first()
+
     def test_poll_project_marks_task_completed_when_valid_result_json_exists(self):
         project, task = self._seed_running_task("outputs/proj-7-7b145d/TASK-001/requirements.md")
         result_path = "outputs/proj-7-7b145d/TASK-001/result.json"
@@ -145,6 +234,91 @@ class PollingServiceTests(unittest.TestCase):
         self.assertEqual(refreshed.status, "completed")
         self.assertEqual(refreshed.result_file_path, result_path)
         self.assertIsNotNone(refreshed.completed_at)
+
+    def test_poll_project_marks_loop_task_002_completed_when_awaiting_review(self):
+        project, task = self._seed_issue_review_loop_task("TASK-002")
+        branch_path = "outputs/proj-71-loop/TASK-002/rounds/round-001/branch.json"
+        files = {
+            "outputs/proj-71-loop/TASK-002/result.json": None,
+            "outputs/proj-71-loop/flow-state.json": json.dumps(self._loop_flow_state("waiting_review")),
+            branch_path: json.dumps({"work_branch": "issue-123", "head_commit": "abc123"}),
+        }
+
+        refreshed = self._poll_loop_task_with_files(project, files)
+
+        self.assertEqual(refreshed.id, task.id)
+        self.assertEqual(refreshed.status, "completed")
+        self.assertEqual(refreshed.result_file_path, branch_path)
+        self.assertIsNotNone(refreshed.completed_at)
+
+    def test_poll_project_does_not_complete_loop_task_002_while_still_unlocked(self):
+        project, task = self._seed_issue_review_loop_task("TASK-002")
+        files = {
+            "outputs/proj-71-loop/TASK-002/result.json": None,
+            "outputs/proj-71-loop/flow-state.json": json.dumps(self._loop_flow_state("unlocked")),
+        }
+
+        refreshed = self._poll_loop_task_with_files(project, files)
+
+        self.assertEqual(refreshed.id, task.id)
+        self.assertEqual(refreshed.status, "running")
+        self.assertIsNone(refreshed.result_file_path)
+
+    def test_poll_project_marks_loop_review_task_completed_when_review_submitted(self):
+        project, task = self._seed_issue_review_loop_task("TASK-003")
+        review_path = "outputs/proj-71-loop/TASK-003/reviews/round-001/review.json"
+        files = {
+            "outputs/proj-71-loop/TASK-003/result.json": None,
+            "outputs/proj-71-loop/flow-state.json": json.dumps(self._loop_flow_state("waiting_review")),
+            review_path: json.dumps(self._loop_review()),
+        }
+
+        refreshed = self._poll_loop_task_with_files(project, files)
+
+        self.assertEqual(refreshed.id, task.id)
+        self.assertEqual(refreshed.status, "completed")
+        self.assertEqual(refreshed.result_file_path, review_path)
+        self.assertIsNotNone(refreshed.completed_at)
+
+    def test_poll_project_marks_loop_decision_task_completed_when_decision_submitted(self):
+        project, task = self._seed_issue_review_loop_task("TASK-005")
+        flow = self._loop_flow_state("needs_fix")
+        flow["phase"] = "needs_fix"
+        flow["task_states"]["TASK-005"] = "frozen"
+        decision_path = "outputs/proj-71-loop/TASK-005/decisions/round-001/decision.json"
+        files = {
+            "outputs/proj-71-loop/TASK-005/result.json": None,
+            "outputs/proj-71-loop/flow-state.json": json.dumps(flow),
+            decision_path: json.dumps({
+                "round": 1,
+                "round_id": "round-001-abc123",
+                "approved": False,
+                "next_action": "fix",
+            }),
+        }
+
+        refreshed = self._poll_loop_task_with_files(project, files)
+
+        self.assertEqual(refreshed.id, task.id)
+        self.assertEqual(refreshed.status, "completed")
+        self.assertEqual(refreshed.result_file_path, decision_path)
+        self.assertIsNotNone(refreshed.completed_at)
+
+    def test_poll_project_does_not_complete_loop_review_task_when_review_mismatches_flow_state(self):
+        project, task = self._seed_issue_review_loop_task("TASK-003")
+        bad_review = self._loop_review()
+        bad_review["head_commit"] = "old"
+        files = {
+            "outputs/proj-71-loop/TASK-003/result.json": None,
+            "outputs/proj-71-loop/flow-state.json": json.dumps(self._loop_flow_state("waiting_review")),
+            "outputs/proj-71-loop/TASK-003/reviews/round-001/review.json": json.dumps(bad_review),
+        }
+
+        refreshed = self._poll_loop_task_with_files(project, files)
+
+        self.assertEqual(refreshed.id, task.id)
+        self.assertEqual(refreshed.status, "running")
+        self.assertIsNone(refreshed.result_file_path)
 
     def test_poll_project_rejects_malformed_result_json(self):
         refreshed, error_events = self._poll_running_task_with_result_content("{not-json")
@@ -475,8 +649,61 @@ class PollingServiceTests(unittest.TestCase):
         self.addCleanup(verify_db.close)
         refreshed = verify_db.query(Task).filter(Task.id == task.id).first()
         self.assertEqual(refreshed.status, "running")
-        self.assertEqual(refreshed.last_error, GIT_REPO_ACCESS_ERROR_MESSAGE)
+        self.assertEqual(refreshed.last_error, GIT_REPO_NETWORK_ERROR_MESSAGE)
         self.assertNotIn("Timeout: result not found", refreshed.last_error)
+
+    def test_poll_project_records_specific_ssh_publickey_sync_failure(self):
+        project, task = self._seed_running_task("outputs/proj-7-7b145d/TASK-001/result.json")
+
+        with patch(
+            "services.polling_service.git_service.ensure_repo_sync",
+            return_value=RepoSyncStatus(
+                repo_dir=None,
+                remote_ready=False,
+                error=(
+                    "git clone failed: git@github.com: Permission denied (publickey).\n"
+                    "fatal: Could not read from remote repository."
+                ),
+            ),
+        ):
+            poll_project(self.SessionLocal(), project)
+
+        verify_db = self.SessionLocal()
+        self.addCleanup(verify_db.close)
+        refreshed = verify_db.query(Task).filter(Task.id == task.id).first()
+        self.assertEqual(refreshed.status, "running")
+        self.assertEqual(refreshed.last_error, GIT_REPO_SSH_PUBLICKEY_ERROR_MESSAGE)
+        self.assertIn("SSH key", refreshed.last_error)
+
+    def test_format_git_repo_access_error_classifies_common_git_failures(self):
+        self.assertEqual(
+            format_git_repo_access_error("remote: Repository not found."),
+            GIT_REPO_NOT_FOUND_ERROR_MESSAGE,
+        )
+        self.assertEqual(
+            format_git_repo_access_error("fatal: Authentication failed for 'https://github.com/org/repo.git/'"),
+            GIT_REPO_NOT_FOUND_ERROR_MESSAGE,
+        )
+        self.assertEqual(
+            format_git_repo_access_error("fatal: could not read Username for 'https://github.com': No such device or address"),
+            GIT_REPO_NOT_FOUND_ERROR_MESSAGE,
+        )
+        self.assertIn("仓库地址是否正确", GIT_REPO_NOT_FOUND_ERROR_MESSAGE)
+        self.assertIn("仓库是否存在", GIT_REPO_NOT_FOUND_ERROR_MESSAGE)
+        self.assertIn("后端容器是否具备访问权限", GIT_REPO_NOT_FOUND_ERROR_MESSAGE)
+        self.assertIn("public HTTPS 仓库通常可匿名只读", GIT_REPO_NOT_FOUND_ERROR_MESSAGE)
+        self.assertEqual(
+            format_git_repo_access_error("Host key verification failed."),
+            GIT_REPO_SSH_PUBLICKEY_ERROR_MESSAGE,
+        )
+        self.assertEqual(
+            format_git_repo_access_error("ssh: Could not resolve hostname github.com: Temporary failure in name resolution"),
+            GIT_REPO_NETWORK_ERROR_MESSAGE,
+        )
+        self.assertEqual(
+            format_git_repo_access_error("fatal: ambiguous git failure"),
+            GIT_REPO_ACCESS_ERROR_MESSAGE,
+        )
 
     def test_poll_project_logs_git_sync_warning_without_recording_error(self):
         project, task = self._seed_running_task(

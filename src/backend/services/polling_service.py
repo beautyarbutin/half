@@ -16,13 +16,65 @@ from services.polling_config_service import (
 from services import feishu_service
 from services.feishu_service import NotificationEvent
 from validators.result_json import validate_result_json_content
+from services.issue_review_loop import (
+    get_issue_review_branch_path,
+    get_issue_review_decision_path,
+    get_issue_review_flow_state,
+    project_uses_issue_review_loop,
+)
 
 logger = logging.getLogger("half.poller")
+
+ISSUE_REVIEW_LOOP_INTERMEDIATE_TASK_CODES = {"TASK-002", "TASK-003", "TASK-004", "TASK-005"}
 
 GIT_REPO_ACCESS_ERROR_MESSAGE = (
     "无法访问 Git 仓库。请检查仓库是否存在、仓库地址是否正确，"
     "是否有访问该仓库的权限。HALF 会自动重试。"
 )
+GIT_REPO_SSH_PUBLICKEY_ERROR_MESSAGE = (
+    "无法通过 SSH 访问 Git 仓库：后端运行环境缺少可用 SSH key，"
+    "或该 key 没有目标仓库权限。Docker 部署时需要把 deploy key 和 known_hosts "
+    "显式挂载到后端容器；如果是 public 仓库，也可以改用 HTTPS 地址。HALF 会自动重试。"
+)
+GIT_REPO_NOT_FOUND_ERROR_MESSAGE = (
+    "无法确认 Git 仓库可访问。请检查仓库地址是否正确、仓库是否存在，"
+    "以及后端容器是否具备访问权限。public HTTPS 仓库通常可匿名只读；"
+    "private 仓库需要配置 SSH key、token 或 credential helper。"
+    "HALF 会自动重试。"
+)
+GIT_REPO_NETWORK_ERROR_MESSAGE = (
+    "无法连接 Git 仓库。请检查后端容器的网络、DNS、代理配置，以及目标 Git 服务是否可达。"
+    "HALF 会自动重试。"
+)
+
+
+def format_git_repo_access_error(error: str | None) -> str:
+    message = (error or "").lower()
+    if "permission denied (publickey" in message or "host key verification failed" in message:
+        return GIT_REPO_SSH_PUBLICKEY_ERROR_MESSAGE
+    if (
+        "repository not found" in message
+        or "not found" in message and "repository" in message
+        or "authentication failed" in message
+        or "could not read username" in message
+    ):
+        return GIT_REPO_NOT_FOUND_ERROR_MESSAGE
+    network_markers = (
+        "could not resolve host",
+        "connection timed out",
+        "operation timed out",
+        "network is unreachable",
+        "connection reset",
+        "connection refused",
+        "failed to connect",
+        "could not resolve hostname",
+        "remote end hung up unexpectedly",
+        "tls handshake timeout",
+        "temporary failure in name resolution",
+    )
+    if any(marker in message for marker in network_markers):
+        return GIT_REPO_NETWORK_ERROR_MESSAGE
+    return GIT_REPO_ACCESS_ERROR_MESSAGE
 
 
 def _normalize_collab_dir(project: Project) -> str:
@@ -103,6 +155,19 @@ def _set_task_runtime_error(db: Session, task: Task, now: datetime, message: str
         ))
 
 
+def _mark_task_completed(db: Session, task: Task, now: datetime, result_path: str, detail: str) -> None:
+    task.status = "completed"
+    task.completed_at = now
+    task.result_file_path = result_path
+    task.last_error = None
+    task.updated_at = now
+    db.add(TaskEvent(
+        task_id=task.id,
+        event_type="completed",
+        detail=detail,
+    ))
+
+
 def _set_plan_runtime_error(plan: ProjectPlan, now: datetime, message: str, *, needs_attention: bool) -> None:
     plan.last_error = message
     plan.updated_at = now
@@ -143,17 +208,19 @@ def poll_project(db: Session, project: Project) -> list[NotificationEvent]:
     ).all()
     sync_status = git_service.ensure_repo_sync(project.id, project.git_repo_url)
     if sync_status.error:
+        user_sync_message = format_git_repo_access_error(sync_status.error)
         technical_sync_message = (
             f"Git sync failed while polling project {project.id}: {sync_status.error}. "
+            f"User-facing message: {user_sync_message} "
             "HALF will retry automatically; this is not treated as 'result not found'."
         )
         logger.error(technical_sync_message)
         for plan in running_plans:
             if _delay_satisfied(plan.dispatched_at):
-                _set_plan_runtime_error(plan, now, GIT_REPO_ACCESS_ERROR_MESSAGE, needs_attention=False)
+                _set_plan_runtime_error(plan, now, user_sync_message, needs_attention=False)
         for task in running_tasks:
             if _delay_satisfied(task.dispatched_at):
-                _set_task_runtime_error(db, task, now, GIT_REPO_ACCESS_ERROR_MESSAGE, needs_attention=False)
+                _set_task_runtime_error(db, task, now, user_sync_message, needs_attention=False)
         db.commit()
         return pending_notifications
 
@@ -204,6 +271,13 @@ def poll_project(db: Session, project: Project) -> list[NotificationEvent]:
                 plan.last_error = f"Plan JSON not found at {source_path} after {elapsed_minutes:.1f} minutes"
                 plan.updated_at = now
 
+    issue_review_loop_enabled = project_uses_issue_review_loop(db, project)
+    issue_review_flow_state = (
+        get_issue_review_flow_state(db, project)
+        if issue_review_loop_enabled
+        else None
+    )
+
     for task in running_tasks:
         # Skip polling this task if start delay has not elapsed yet
         if not _delay_satisfied(task.dispatched_at):
@@ -218,21 +292,98 @@ def poll_project(db: Session, project: Project) -> list[NotificationEvent]:
         if result.found and result.validation_error:
             _set_task_runtime_error(db, task, now, result.validation_error, needs_attention=True)
         elif result.found:
-            task.status = "completed"
-            task.completed_at = now
-            task.result_file_path = result_path
-            task.last_error = None
-            task.updated_at = now
-            db.add(TaskEvent(
-                task_id=task.id,
-                event_type="completed",
-                detail=f"Result validated at {result_path}",
-            ))
+            _mark_task_completed(db, task, now, result_path, f"Result validated at {result_path}")
             pending_notifications.append(NotificationEvent(
                 event_type="completed",
                 project_name=project.name,
                 task_name=task.task_name,
             ))
+        elif issue_review_loop_enabled and task.task_code in ISSUE_REVIEW_LOOP_INTERMEDIATE_TASK_CODES:
+            task_states = (
+                issue_review_flow_state.get("task_states", {})
+                if isinstance(issue_review_flow_state, dict)
+                else {}
+            )
+            effective_task_states = (
+                issue_review_flow_state.get("effective_task_states", {})
+                if isinstance(issue_review_flow_state, dict)
+                else {}
+            )
+            reviews = (
+                issue_review_flow_state.get("reviews", {})
+                if isinstance(issue_review_flow_state, dict)
+                else {}
+            )
+            decision = (
+                issue_review_flow_state.get("decision", {})
+                if isinstance(issue_review_flow_state, dict)
+                else {}
+            )
+            flow_result_path = ""
+            if task.task_code == "TASK-002" and task_states.get("TASK-002") in ("waiting_review", "approved"):
+                current_round = (
+                    issue_review_flow_state.get("current_round")
+                    if isinstance(issue_review_flow_state, dict)
+                    else None
+                )
+                if isinstance(current_round, int):
+                    branch_path = get_issue_review_branch_path(project, current_round)
+                    if git_service.read_file(
+                        project.id,
+                        branch_path,
+                        git_repo_url=project.git_repo_url,
+                        prefer_remote=True,
+                    ) is not None:
+                        flow_result_path = branch_path
+                if not flow_result_path:
+                    base = _normalize_collab_dir(project)
+                    flow_state_path = f"{base}/flow-state.json" if base else "flow-state.json"
+                    if git_service.read_file(
+                        project.id,
+                        flow_state_path,
+                        git_repo_url=project.git_repo_url,
+                        prefer_remote=True,
+                    ) is not None:
+                        flow_result_path = flow_state_path
+            elif task.task_code in ("TASK-003", "TASK-004"):
+                review_state = reviews.get(task.task_code)
+                if isinstance(review_state, dict) and review_state.get("status") == "submitted":
+                    flow_result_path = str(review_state.get("review_path") or result_path)
+            elif task.task_code == "TASK-005":
+                current_round = (
+                    issue_review_flow_state.get("current_round")
+                    if isinstance(issue_review_flow_state, dict)
+                    else None
+                )
+                terminal_phase = (
+                    issue_review_flow_state.get("derived_phase") or issue_review_flow_state.get("phase")
+                    if isinstance(issue_review_flow_state, dict)
+                    else None
+                )
+                if (
+                    isinstance(current_round, int)
+                    and isinstance(decision, dict)
+                    and decision.get("status") == "submitted"
+                    and (
+                        terminal_phase in {"needs_fix", "approved", "completed", "needs_attention"}
+                        or effective_task_states.get("TASK-005") in {"completed", "needs_attention"}
+                    )
+                ):
+                    flow_result_path = str(decision.get("decision_path") or get_issue_review_decision_path(project, current_round))
+
+            if flow_result_path:
+                _mark_task_completed(
+                    db,
+                    task,
+                    now,
+                    flow_result_path,
+                    f"Issue review loop state advanced at {flow_result_path}",
+                )
+                pending_notifications.append(NotificationEvent(
+                    event_type="completed",
+                    project_name=project.name,
+                    task_name=task.task_name,
+                ))
         elif task.dispatched_at:
             elapsed_minutes = (now - task.dispatched_at.replace(tzinfo=timezone.utc)).total_seconds() / 60
             timeout_limit = get_effective_task_timeout_minutes(db, project, task)
