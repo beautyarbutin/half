@@ -83,6 +83,8 @@ class SecureHandoffExperimentTests(unittest.TestCase):
 
         self.assertTrue((workspace / "example.py").is_file())
         self.assertFalse((workspace / ".git").exists())
+        self.assertIn(str(workspace), prompt)
+        self.assertIn("Before reading or editing files, switch to that directory", prompt)
         self.assertIn("Finish the adapter", prompt)
         self.assertNotIn("Do not mutate input", prompt)
         self.assertNotIn("TRACE-risks", prompt)

@@ -150,7 +150,7 @@ def prepare_run(
     )
 
     baseline = _snapshot_workspace(workspace)
-    prompt = _render_prompt(manifest, arm, canonical, canaries)
+    prompt = _render_prompt(manifest, arm, canonical, canaries, workspace)
     attempt_limit = max_attempts or int(manifest.get("max_attempts", 3))
     if attempt_limit < 1 or attempt_limit > 10:
         raise ValueError("max_attempts must be between 1 and 10")
@@ -431,9 +431,17 @@ def _render_prompt(
     arm: SecureArm,
     canonical: dict[str, Any],
     canaries: dict[str, str],
+    workspace: Path,
 ) -> str:
     lines = [
         "You are the successor agent in a controlled handoff ablation experiment.",
+        "",
+        "## Required workspace",
+        "You must work in this exact source workspace:",
+        f"`{workspace}`",
+        "",
+        "Before reading or editing files, switch to that directory and verify it contains `src/`, `tests/`, and `pyproject.toml`.",
+        "If your current directory is not this exact workspace, change directories first. Do not use the conversation's default working directory.",
         "",
         "## Successor task",
         str(manifest["public_task"]).strip(),
