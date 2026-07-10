@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from access import get_owned_project, get_owned_task
@@ -13,6 +13,7 @@ from auth import get_current_user
 from schemas import UtcDatetimeModel
 from services.path_service import ExpectedOutputPathError, normalize_expected_output_path
 from services.prompt_service import generate_task_prompt
+from services.handoff_service import get_handoff_arm, handoff_arm_options
 from services import git_service
 from services.issue_review_loop import (
     get_effective_business_state,
@@ -49,10 +50,14 @@ class TaskResponse(UtcDatetimeModel):
 
 class PromptRequest(BaseModel):
     include_usage: bool = False
+    handoff_arm_id: Optional[str] = None
 
 
 class PromptResponse(BaseModel):
     prompt: str
+    handoff_arm_id: Optional[str] = None
+    handoff_arm_label: Optional[str] = None
+    handoff_fields: list[str] = Field(default_factory=list)
 
 
 class TaskUpdateRequest(BaseModel):
@@ -64,6 +69,15 @@ class TaskUpdateRequest(BaseModel):
 
 class TaskDispatchRequest(BaseModel):
     ignore_missing_predecessor_outputs: bool = False
+    handoff_arm_id: Optional[str] = None
+
+
+class HandoffArmResponse(BaseModel):
+    arm_id: str
+    label: str
+    description: str
+    format: str
+    include_fields: list[str]
 
 
 def _load_task_project(db: Session, task: Task) -> Project:
@@ -71,6 +85,12 @@ def _load_task_project(db: Session, task: Task) -> Project:
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
     return project
+
+
+@router.get("/api/handoff-arms", response_model=list[HandoffArmResponse])
+def list_handoff_arms(user: User = Depends(get_current_user)):
+    _ = user
+    return handoff_arm_options()
 
 
 def _validate_loop_dispatch_state(db: Session, task: Task, project: Project, *, action: str) -> bool:
@@ -322,8 +342,23 @@ def list_project_predecessor_status(project_id: int, refresh: bool = False, db: 
 def task_generate_prompt(task_id: int, body: PromptRequest = PromptRequest(), db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     task = get_owned_task(db, task_id, user)
     project = get_owned_project(db, task.project_id, user)
-    prompt = generate_task_prompt(db, project, task, include_usage=body.include_usage)
-    return PromptResponse(prompt=prompt)
+    try:
+        arm = get_handoff_arm(body.handoff_arm_id)
+        prompt = generate_task_prompt(
+            db,
+            project,
+            task,
+            include_usage=body.include_usage,
+            handoff_arm_id=body.handoff_arm_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return PromptResponse(
+        prompt=prompt,
+        handoff_arm_id=arm.arm_id if arm else None,
+        handoff_arm_label=arm.label if arm else None,
+        handoff_fields=list(arm.include_fields) if arm else [],
+    )
 
 
 # Dispatch task
@@ -387,13 +422,21 @@ def dispatch_task(
         )
 
     now = datetime.now(timezone.utc)
+    try:
+        arm = get_handoff_arm(body.handoff_arm_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     task.status = "running"
     task.dispatched_at = now
     task.updated_at = now
     db.add(TaskEvent(
         task_id=task.id,
         event_type="dispatched",
-        detail="Task dispatched, timer started",
+        detail=(
+            f"Task dispatched, timer started. Handoff arm: {arm.arm_id}"
+            if arm
+            else "Task dispatched, timer started"
+        ),
     ))
     db.commit()
     db.refresh(task)
@@ -482,6 +525,10 @@ def redispatch_task(
         )
 
     now = datetime.now(timezone.utc)
+    try:
+        arm = get_handoff_arm(body.handoff_arm_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     prev_status = task.status
     prev_error = task.last_error
     task.status = "running"
@@ -493,6 +540,8 @@ def redispatch_task(
         if prev_error
         else f"Task redispatched from {prev_status}"
     )
+    if arm:
+        detail = f"{detail}. Handoff arm: {arm.arm_id}"
     db.add(TaskEvent(
         task_id=task.id,
         event_type="redispatched",

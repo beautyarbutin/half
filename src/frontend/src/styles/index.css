@@ -1328,7 +1328,8 @@ body,
 }
 
 .detail-input,
-.detail-textarea {
+.detail-textarea,
+.detail-select {
   width: 100%;
   border: 1px solid var(--color-border);
   border-radius: var(--radius-sm);
@@ -1338,9 +1339,20 @@ body,
   background: #fff;
 }
 
+.detail-select {
+  min-height: 40px;
+}
+
 .detail-textarea {
   resize: vertical;
   min-height: 88px;
+}
+
+.handoff-experiment-section {
+  padding: 10px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: #f8fafc;
 }
 
 .dep-list {
@@ -3141,4 +3153,120 @@ body,
   .agent-form-overlay {
     padding: 20px 12px;
   }
+}
+.handoff-lab-page {
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 28px 32px 56px;
+}
+
+.handoff-lab-header,
+.handoff-lab-section-heading,
+.handoff-prompt-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.handoff-lab-header h1,
+.handoff-lab-band h2,
+.handoff-lab-band h3 { margin: 0; }
+
+.handoff-lab-header p,
+.handoff-lab-section-heading p {
+  margin: 8px 0 0;
+  color: var(--text-secondary, #667085);
+}
+
+.handoff-lab-band {
+  margin-top: 24px;
+  padding: 24px 0;
+  border-top: 1px solid var(--border-color, #dde3ec);
+}
+
+.handoff-lab-form-grid {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) minmax(240px, 1.4fr) minmax(160px, .8fr) auto;
+  gap: 16px;
+  align-items: end;
+  margin-top: 18px;
+}
+
+.handoff-lab-form-grid label,
+.handoff-attempt-grid label,
+.handoff-wide-field {
+  display: grid;
+  gap: 7px;
+  color: var(--text-secondary, #667085);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.handoff-lab-form-grid input,
+.handoff-lab-form-grid select,
+.handoff-attempt-grid input,
+.handoff-wide-field input,
+.handoff-wide-field textarea { width: 100%; }
+
+.handoff-run-status {
+  padding: 5px 10px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  background: #f8fafc;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.status-resolved { color: #067647; border-color: #75e0a7; background: #ecfdf3; }
+.status-failed { color: #b42318; border-color: #fda29b; background: #fef3f2; }
+.status-needs_rework { color: #b54708; border-color: #fec84b; background: #fffaeb; }
+
+.handoff-run-facts { display: grid; gap: 10px; margin: 18px 0; }
+.handoff-run-facts > div { display: grid; grid-template-columns: 110px minmax(0, 1fr); gap: 16px; }
+.handoff-run-facts dt { color: var(--text-secondary, #667085); }
+.handoff-run-facts dd { margin: 0; overflow-wrap: anywhere; }
+
+.handoff-prompt {
+  width: 100%;
+  min-height: 360px;
+  margin-top: 12px;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.handoff-attempt-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(160px, 1fr));
+  gap: 14px;
+  margin: 18px 0;
+}
+
+.handoff-wide-field { margin: 16px 0; }
+.handoff-wide-field textarea { min-height: 120px; }
+
+.handoff-metrics-row {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(120px, 1fr));
+  gap: 1px;
+  margin: 18px 0;
+  background: var(--border-color, #dde3ec);
+  border: 1px solid var(--border-color, #dde3ec);
+}
+
+.handoff-metrics-row > div { display: grid; gap: 4px; padding: 18px; background: #fff; }
+.handoff-metrics-row strong { font-size: 24px; }
+.handoff-metrics-row span { color: var(--text-secondary, #667085); font-size: 13px; }
+.handoff-evaluation { line-height: 1.6; }
+.mono { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+
+@media (max-width: 900px) {
+  .handoff-lab-page { padding: 20px 16px 40px; }
+  .handoff-lab-form-grid,
+  .handoff-attempt-grid,
+  .handoff-metrics-row { grid-template-columns: 1fr; }
+  .handoff-lab-header,
+  .handoff-lab-section-heading { align-items: flex-start; flex-direction: column; }
+  .handoff-run-facts > div { grid-template-columns: 1fr; gap: 4px; }
 }

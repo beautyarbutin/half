@@ -193,6 +193,9 @@ export default function Layout() {
           <NavLink to="/templates" className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'}>
             流程模版
           </NavLink>
+          <NavLink to="/handoff-experiments" className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'}>
+            Handoff 实验
+          </NavLink>
           {isAdmin && (
             <NavLink to="/admin/users" className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'}>
               用户管理

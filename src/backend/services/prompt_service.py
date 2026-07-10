@@ -4,6 +4,7 @@ import re
 from sqlalchemy.orm import Session
 
 from models import Agent, ProcessTemplate, Project, ProjectPlan, Task
+from services.handoff_service import render_handoff_experiment_section, render_handoff_output_contract
 from services.issue_review_loop import FLOW_TYPE
 from services.project_agents import parse_agent_assignments_json
 from services.prompt_settings import normalize_plan_co_location_guidance
@@ -350,6 +351,9 @@ def generate_task_prompt(
     project: Project,
     task: Task,
     include_usage: bool = False,  # kept for API compat, no longer used
+    handoff_arm_id: str | None = None,
+    handoff_loader=None,
+    result_loader=None,
 ) -> str:
     collab = (project.collaboration_dir or "").strip("/")
     task_dir = f"{collab}/{task.task_code}" if collab else task.task_code
@@ -378,6 +382,16 @@ def generate_task_prompt(
             predecessor_lines = "无前序任务输出"
     else:
         predecessor_lines = "无前序任务输出"
+    handoff_experiment_section = render_handoff_experiment_section(
+        project,
+        depends_on,
+        handoff_arm_id,
+        handoff_loader=handoff_loader,
+        result_loader=result_loader,
+    )
+    handoff_experiment_block = f"\n\n{handoff_experiment_section}" if handoff_experiment_section else ""
+    handoff_output_contract = render_handoff_output_contract(task.task_code) if handoff_arm_id else ""
+    handoff_output_block = f"\n\n{handoff_output_contract}" if handoff_output_contract else ""
 
     sections = [f"你是项目 [{project.name}] 的执行 Agent。"]
     if goal_text:
@@ -426,12 +440,12 @@ def generate_task_prompt(
 - 任务描述：{task.description}
 
 ## 前序任务输出
-{predecessor_lines}
+{predecessor_lines}{handoff_experiment_block}
 
 ## 输出要求
 1. 将所有协作产出文件写入 HALF 协作仓库目录：{task_dir}/
 {sentinel_rules}
 
-{completion_sentinel}""")
+{completion_sentinel}{handoff_output_block}""")
 
     return "\n\n".join(sections)

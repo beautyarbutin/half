@@ -203,6 +203,101 @@ class PromptServiceTests(unittest.TestCase):
         self.assertIn("只有项目代码仓库的代码修改已经提交并 push 成功后，才允许生成 `result.json`", prompt)
         self.assertIn("no_code_changes: true", prompt)
 
+    def test_generate_task_prompt_injects_filtered_handoff_arm(self):
+        project = Project(
+            id=4,
+            name="Demo",
+            git_repo_url="https://github.com/org/collaboration",
+            project_repo_url="https://github.com/org/code",
+            collaboration_dir="outputs/proj-4",
+        )
+        task = Task(
+            project_id=4,
+            task_code="TASK-002",
+            task_name="接入 API",
+            description="读取 TASK-001 handoff 后继续实现",
+            depends_on_json='["TASK-001"]',
+        )
+        predecessor = Task(project_id=4, task_code="TASK-001", task_name="实现核心逻辑")
+        handoff_json = (
+            '{"goal":"实现核心筛选逻辑",'
+            '"changed_files":["src/inventory/catalog.py"],'
+            '"verification":"pytest tests/test_catalog.py passed",'
+            '"unfinished_items":"api.py 尚未接入",'
+            '"risks":"不要重复实现筛选逻辑",'
+            '"next_steps":"实现 search_items"}'
+        )
+
+        class FakeQuery:
+            def filter(self, *args, **kwargs):
+                return self
+
+            def all(self):
+                return [predecessor]
+
+        class FakeSession:
+            def query(self, model):
+                self.model = model
+                return FakeQuery()
+
+        def handoff_loader(_project, task_code):
+            self.assertEqual(task_code, "TASK-001")
+            return handoff_json
+
+        prompt = generate_task_prompt(
+            FakeSession(),
+            project,
+            task,
+            handoff_arm_id="B_no_verification",
+            handoff_loader=handoff_loader,
+        )
+
+        self.assertIn("## Handoff 消融实验上下文", prompt)
+        self.assertIn("实验组：B_no_verification", prompt)
+        self.assertIn("前序变更 (`changed_files`): `src/inventory/catalog.py`", prompt)
+        self.assertIn("未完成项 (`unfinished_items`): api.py 尚未接入", prompt)
+        self.assertIn("风险/约束 (`risks`): 不要重复实现筛选逻辑", prompt)
+        self.assertNotIn("验证证据 (`verification`):", prompt)
+        self.assertNotIn("pytest tests/test_catalog.py passed", prompt)
+        self.assertIn("## Handoff 产出要求（用于后续消融实验）", prompt)
+
+    def test_generate_task_prompt_summary_handoff_hides_structured_field_names(self):
+        project = Project(id=4, name="Demo", collaboration_dir="outputs/proj-4")
+        task = Task(
+            project_id=4,
+            task_code="TASK-002",
+            task_name="接入 API",
+            description="读取 TASK-001 handoff 后继续实现",
+            depends_on_json='["TASK-001"]',
+        )
+        predecessor = Task(project_id=4, task_code="TASK-001", task_name="实现核心逻辑")
+
+        class FakeQuery:
+            def filter(self, *args, **kwargs):
+                return self
+
+            def all(self):
+                return [predecessor]
+
+        class FakeSession:
+            def query(self, model):
+                return FakeQuery()
+
+        prompt = generate_task_prompt(
+            FakeSession(),
+            project,
+            task,
+            handoff_arm_id="E_summary_only",
+            handoff_loader=lambda _project, _task_code: '{"goal":"实现核心筛选逻辑","risks":"不要重复实现"}',
+        )
+
+        self.assertIn("实验组：E_summary_only", prompt)
+        self.assertIn("前序任务 TASK-001 自然语言摘要", prompt)
+        self.assertIn("实现核心筛选逻辑", prompt)
+        self.assertIn("不要重复实现", prompt)
+        self.assertNotIn("本阶段目标 (`goal`):", prompt)
+        self.assertNotIn("风险/约束 (`risks`):", prompt)
+
     def test_generate_task_prompt_includes_project_goal_section(self):
         project = Project(
             id=4,

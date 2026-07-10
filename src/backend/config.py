@@ -36,6 +36,14 @@ class Settings:
     )
     REPOS_DIR: str = os.getenv("HALF_REPOS_DIR", os.path.join(os.getcwd(), "repos"))
     WORKSPACE_ROOT: str | None = os.getenv("HALF_WORKSPACE_ROOT")
+    HANDOFF_EXPERIMENT_PRIVATE_ROOT: str = os.getenv(
+        "HALF_HANDOFF_EXPERIMENT_PRIVATE_ROOT",
+        os.path.join(os.path.expanduser("~"), ".half", "private-experiments"),
+    )
+    HANDOFF_EXPERIMENT_RUNS_ROOT: str = os.getenv(
+        "HALF_HANDOFF_EXPERIMENT_RUNS_ROOT",
+        os.path.join(os.path.expanduser("~"), ".half", "experiment-runs"),
+    )
     JWT_ALGORITHM: str = "HS256"
     JWT_EXPIRE_MINUTES: int = 60 * 24  # 24 hours
     POLL_INTERVAL_SECONDS: int = 45

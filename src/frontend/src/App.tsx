@@ -16,6 +16,7 @@ const AgentSettingsPage = lazy(() => import('./pages/AgentSettingsPage'));
 const UserManagementPage = lazy(() => import('./pages/UserManagementPage'));
 const ProcessTemplatesPage = lazy(() => import('./pages/ProcessTemplatesPage'));
 const CodexAgentLoginPage = lazy(() => import('./pages/CodexAgentLoginPage'));
+const HandoffExperimentsPage = lazy(() => import('./pages/HandoffExperimentsPage'));
 
 function RequireAuth({ children }: { children: React.ReactElement }) {
   const token = localStorage.getItem('token');
@@ -58,6 +59,7 @@ export default function App() {
           <Route path="agents" element={<Suspense fallback={<PageFallback />}><AgentsPage /></Suspense>} />
           <Route path="agents/:agentId/codex-login" element={<Suspense fallback={<PageFallback />}><CodexAgentLoginPage /></Suspense>} />
           <Route path="agents/settings" element={<Suspense fallback={<PageFallback />}><AgentSettingsPage /></Suspense>} />
+          <Route path="handoff-experiments" element={<Suspense fallback={<PageFallback />}><HandoffExperimentsPage /></Suspense>} />
           <Route path="admin/users" element={<Suspense fallback={<PageFallback />}><UserManagementPage /></Suspense>} />
         </Route>
         <Route path="*" element={<Navigate to="/" replace />} />

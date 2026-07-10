@@ -14,6 +14,59 @@ interface Props {
   onRefresh: () => void;
 }
 
+interface HandoffArm {
+  arm_id: string;
+  label: string;
+  description: string;
+  format: string;
+  include_fields: string[];
+}
+
+const FALLBACK_HANDOFF_ARMS: HandoffArm[] = [
+  {
+    arm_id: 'A_full',
+    label: '完整组',
+    description: '注入最小 schema 的全部 6 个字段，作为基线。',
+    format: 'structured',
+    include_fields: ['goal', 'changed_files', 'verification', 'unfinished_items', 'risks', 'next_steps'],
+  },
+  {
+    arm_id: 'B_no_verification',
+    label: '去掉验证证据',
+    description: '不注入 verification 字段。',
+    format: 'structured',
+    include_fields: ['goal', 'changed_files', 'unfinished_items', 'risks', 'next_steps'],
+  },
+  {
+    arm_id: 'C_no_unfinished_items',
+    label: '去掉未完成项',
+    description: '不注入 unfinished_items 字段。',
+    format: 'structured',
+    include_fields: ['goal', 'changed_files', 'verification', 'risks', 'next_steps'],
+  },
+  {
+    arm_id: 'D_no_risks',
+    label: '去掉风险/约束',
+    description: '不注入 risks 字段。',
+    format: 'structured',
+    include_fields: ['goal', 'changed_files', 'verification', 'unfinished_items', 'next_steps'],
+  },
+  {
+    arm_id: 'E_summary_only',
+    label: '只给自然语言摘要',
+    description: '不暴露结构化字段名，只注入一段摘要。',
+    format: 'summary',
+    include_fields: ['goal', 'changed_files', 'verification', 'unfinished_items', 'risks', 'next_steps'],
+  },
+  {
+    arm_id: 'F_full_context',
+    label: '给全文上下文',
+    description: '注入前序 handoff.json 与 result.json 原文。',
+    format: 'full_context',
+    include_fields: ['goal', 'changed_files', 'verification', 'unfinished_items', 'risks', 'next_steps'],
+  },
+];
+
 export default function TaskDetailPanel({ task, agents, allTasks, flowState, onRefresh }: Props) {
   const [loading, setLoading] = useState('');
   const [copied, setCopied] = useState(false);
@@ -30,6 +83,8 @@ export default function TaskDetailPanel({ task, agents, allTasks, flowState, onR
   // 失效而静默失败，导致剪贴板里残留上一次成功复制的 Prompt。
   const [cachedPrompt, setCachedPrompt] = useState<string | null>(null);
   const [promptError, setPromptError] = useState<string | null>(null);
+  const [handoffArms, setHandoffArms] = useState<HandoffArm[]>(FALLBACK_HANDOFF_ARMS);
+  const [selectedHandoffArmId, setSelectedHandoffArmId] = useState('');
 
   const assignee = agents.find((a) => a.id === task.assignee_agent_id);
 
@@ -51,6 +106,15 @@ export default function TaskDetailPanel({ task, agents, allTasks, flowState, onR
   const canPreparePrompt = flowState?.enabled ? (businessDispatchable || canLoopRedispatch) : blockedPredecessors.length === 0;
   const canEdit = !flowState?.enabled && task.status === 'pending' && canOperate;
   const showIssueReviewLoopAttention = isIssueReviewLoopAttentionTask(task, flowState);
+  const selectedHandoffArm = handoffArms.find((arm) => arm.arm_id === selectedHandoffArmId) || null;
+
+  useEffect(() => {
+    void api.getCached<HandoffArm[]>('/api/handoff-arms', (value) => {
+      if (Array.isArray(value) && value.length > 0) {
+        setHandoffArms(value);
+      }
+    });
+  }, []);
 
   useEffect(() => {
     setDraftTaskName(task.task_name);
@@ -125,7 +189,7 @@ export default function TaskDetailPanel({ task, agents, allTasks, flowState, onR
     let cancelled = false;
     api.post<{ prompt: string }>(
       `/api/tasks/${task.id}/generate-prompt`,
-      { include_usage: false },
+      { include_usage: false, handoff_arm_id: selectedHandoffArmId || null },
     )
       .then((resp) => {
         if (cancelled) return;
@@ -138,7 +202,7 @@ export default function TaskDetailPanel({ task, agents, allTasks, flowState, onR
     return () => {
       cancelled = true;
     };
-  }, [task.id, task.status, task.task_name, task.description, task.expected_output_path, canPreparePrompt, hasDraftChanges, flowState?.enabled, businessDispatchable]);
+  }, [task.id, task.status, task.task_name, task.description, task.expected_output_path, canPreparePrompt, hasDraftChanges, flowState?.enabled, businessDispatchable, selectedHandoffArmId]);
 
   async function performDispatch(action: 'dispatch' | 'redispatch') {
     const actionAllowed = action === 'redispatch' && flowState?.enabled ? canLoopRedispatch : canOperate;
@@ -176,6 +240,7 @@ export default function TaskDetailPanel({ task, agents, allTasks, flowState, onR
     try {
       await api.post(`/api/tasks/${task.id}/${action}`, {
         ignore_missing_predecessor_outputs: false,
+        handoff_arm_id: selectedHandoffArmId || null,
       });
       setShowDispatchReminder(false);
       if (dispatchReminderRef.current) clearTimeout(dispatchReminderRef.current);
@@ -262,6 +327,32 @@ export default function TaskDetailPanel({ task, agents, allTasks, flowState, onR
               </li>
             ))}
           </ul>
+        )}
+      </div>
+
+      <div className="detail-section handoff-experiment-section">
+        <label>Handoff 实验组</label>
+        <select
+          value={selectedHandoffArmId}
+          onChange={(event) => setSelectedHandoffArmId(event.target.value)}
+          className="detail-select"
+          title="选择后，生成的任务 Prompt 会按该消融组注入前序 handoff.json"
+        >
+          <option value="">不启用（普通任务）</option>
+          {handoffArms.map((arm) => (
+            <option key={arm.arm_id} value={arm.arm_id}>
+              {arm.arm_id} - {arm.label}
+            </option>
+          ))}
+        </select>
+        {selectedHandoffArm ? (
+          <div className="helper-text">
+            {selectedHandoffArm.description} 可见字段：{selectedHandoffArm.include_fields.join(', ') || '无'}
+          </div>
+        ) : (
+          <div className="helper-text">
+            不启用时沿用普通 HALF prompt，不读取前序 handoff.json。
+          </div>
         )}
       </div>
 
