@@ -114,3 +114,18 @@ B、C、F、G 与 H 用于探索目标、变更定位、风险和下一步建议
 2. 本任务对该信息需求较低。
 
 因此结论限定为该任务分布上的经验结果，后续仍需在其他自然任务上复现。
+
+## 8. Pilot 校准修订
+
+2026-07-17 的首个 A_full pilot（run `20260717T083912Z-efc1cc90`）发现两项评测器问题：
+
+1. `test_acceptance_06` 和 `test_acceptance_07` 将非法输入的拒绝方式限定为
+   `ValueError`，但公开任务只要求拒绝非法 positional 输入，并未规定异常类型。
+   校准后改为接受明确的 `ValueError` 或 `AssertionError`，不匹配异常文案。
+2. Hypothesis 生成的 `.hypothesis/` 缓存被误计为 Agent 变更文件。
+   校准后该目录不复制到 run workspace，也不进入 workspace diff。
+
+同一份最终 workspace 在修订后的隐藏评测中为 10/10；未实现基线仍为 1/10，
+因此修订保留了完成态与未完成态的区分能力。上述 pilot 因事后修改评测器及变更文件
+统计规则而排除，不进入任何字段效果、Token、返工或行为事件比较。后续结果仅使用
+修订后新建的 run。
