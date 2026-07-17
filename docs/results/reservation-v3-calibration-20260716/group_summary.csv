@@ -1,0 +1,5 @@
+﻿arm_id,runs,final_success_rate,first_attempt_success_rate,hidden_pass_rate,hidden_passed,hidden_total,mean_token_total,token_ratio_vs_full,token_increase_vs_full,mean_interaction_rounds,mean_rework_count,mean_changed_file_count,leakage_passed_runs,trace_complete_runs,mean_file_read_events,mean_unique_files_read,mean_search_events,mean_repeated_search_events,mean_test_runs,mean_edit_events,mean_interface_guess_events,mean_ineffective_edit_attempts,mean_rollback_events,mean_pre_edit_discovery_events
+A_full,2,1.0,1.0,1.0,20,20,282513.5,1.0,0.0,1,0,3,2,2,21,20,1.5,0,2,3,0,0,0,20.5
+D_no_verification,2,1.0,0.0,1.0,20,20,689344,2.4400391485716613,1.4400391485716613,2.5,1.5,3,2,2,29,23,5,0,4.5,7.5,4,0.5,0,28.5
+E_no_unfinished_items,2,0.0,0.0,0.9,18,20,827009.5,2.9273273666568147,1.9273273666568147,3,2,3,2,2,32,24.5,3.5,0,4.5,9,4,2,0,34
+H_no_handoff,2,0.0,0.0,0.85,17,20,1019314.5,3.608020501675141,2.608020501675141,3,2,4.5,2,2,37,27,5.5,0,9.5,7,5,1.5,0,34.5

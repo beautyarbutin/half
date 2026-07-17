@@ -8,6 +8,7 @@ from models import User
 from services.secure_handoff_experiment import (
     add_intervention,
     evaluate_run,
+    exclude_run_from_analysis,
     get_run_prompt,
     list_experiments,
     load_run,
@@ -15,6 +16,7 @@ from services.secure_handoff_experiment import (
     secure_arm_options,
     submit_manual_attempt,
     summarize_experiment,
+    update_run_usage,
 )
 
 
@@ -40,12 +42,18 @@ class SubmitAttemptRequest(BaseModel):
     usage: AttemptUsage = Field(default_factory=AttemptUsage)
     notes: str = ""
     agent_output: str = ""
+    trace_jsonl: str = ""
+    trace_complete: bool = False
 
 
 class InterventionRequest(BaseModel):
     kind: str
     detail: str
     minutes: float = Field(default=0, ge=0)
+
+
+class ExcludeRunRequest(BaseModel):
+    reason: str = Field(min_length=1)
 
 
 @router.get("")
@@ -111,6 +119,8 @@ def submit_experiment_attempt(
             usage=body.usage.model_dump(),
             notes=body.notes,
             agent_output=body.agent_output,
+            trace_jsonl=body.trace_jsonl,
+            trace_complete=body.trace_complete,
         )
     except (OSError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -121,6 +131,32 @@ def evaluate_experiment_run(run_id: str, user: User = Depends(get_current_user))
     _ = user
     try:
         return evaluate_run(run_id)
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.patch("/runs/{run_id}/usage")
+def update_experiment_run_usage(
+    run_id: str,
+    body: AttemptUsage,
+    user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    _ = user
+    try:
+        return update_run_usage(run_id, body.model_dump())
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/runs/{run_id}/exclude")
+def exclude_experiment_run(
+    run_id: str,
+    body: ExcludeRunRequest,
+    user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    _ = user
+    try:
+        return exclude_run_from_analysis(run_id, body.reason)
     except (OSError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

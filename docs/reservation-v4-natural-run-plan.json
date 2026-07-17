@@ -1,0 +1,40 @@
+{
+  "experiment_id": "reservation-v4-natural",
+  "cohort_id": "reservation-v4-natural-n3-20260717",
+  "purpose": "natural_task_three_replicates",
+  "created_on": "2026-07-17",
+  "randomization": {
+    "method": "Pilot used Python random.Random(seed).shuffle; replicates 2-3 preserve actual operator execution order and were not re-randomized",
+    "seed": 20260717,
+    "scope": "pilot_only"
+  },
+  "fixed_conditions": {
+    "model": "gpt-5.5",
+    "reasoning_effort": "xhigh",
+    "max_attempts": 3,
+    "new_conversation_per_run": true,
+    "leakage_gate": "passed",
+    "trace_required": true
+  },
+  "runs": [
+    {"order": 1, "replicate": 1, "arm_id": "H_no_handoff", "run_id": "20260717T022617Z-1196afcf", "status": "completed"},
+    {"order": 2, "replicate": 1, "arm_id": "A_full", "run_id": "20260717T023219Z-a2ce3147", "status": "completed"},
+    {"order": 3, "replicate": 1, "arm_id": "D_no_verification", "run_id": "20260717T023914Z-bbe4444e", "status": "completed"},
+    {"order": 4, "replicate": 1, "arm_id": "E_no_unfinished_items", "run_id": "20260717T024812Z-f933530c", "status": "completed"},
+    {"order": 5, "replicate": 2, "arm_id": "E_no_unfinished_items", "run_id": "20260717T031748Z-2fda682a", "status": "completed"},
+    {"order": 6, "replicate": 2, "arm_id": "A_full", "run_id": "20260717T032247Z-8c93255d", "status": "completed"},
+    {"order": 7, "replicate": 2, "arm_id": "H_no_handoff", "run_id": "20260717T032929Z-aa3ca5bb", "status": "completed"},
+    {"order": 8, "replicate": 2, "arm_id": "D_no_verification", "run_id": "20260717T033627Z-90fe8205", "status": "completed"},
+    {"order": 9, "replicate": 3, "arm_id": "A_full", "run_id": "20260717T063558Z-1d8cd312", "status": "completed"},
+    {"order": 10, "replicate": 3, "arm_id": "D_no_verification", "run_id": "20260717T064016Z-46f096c4", "status": "completed"},
+    {"order": 11, "replicate": 3, "arm_id": "H_no_handoff", "run_id": "20260717T064519Z-34d32980", "status": "completed"},
+    {"order": 12, "replicate": 3, "arm_id": "E_no_unfinished_items", "run_id": "20260717T065624Z-86cecd15", "status": "completed"}
+  ],
+  "excluded_runs": [
+    {
+      "run_id": "20260717T063529Z-f2105644",
+      "arm_id": "A_full",
+      "reason": "Protocol violation: the agent edited workspace 20260717T040138Z-11223fcf instead of the assigned 20260717T063529Z-f2105644 workspace; the evaluated workspace received no code changes."
+    }
+  ]
+}

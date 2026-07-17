@@ -14,6 +14,13 @@ from pathlib import Path
 from typing import Any
 
 from config import settings
+from services.handoff_trace_analysis import (
+    acquire_codex_trace,
+    aggregate_event_tables,
+    analyze_trace,
+    build_leakage_audit,
+    extract_codex_usage,
+)
 
 
 SCHEMA_FIELDS = (
@@ -168,16 +175,24 @@ def prepare_run(
         "workspace": str(workspace),
         "private_run_dir": str(run_dir),
         "prompt_sha256": _sha256_text(prompt),
+        "input_integrity": _input_integrity(experiment_dir, manifest, fixture_repo),
         "baseline": baseline,
         "attempts": [],
         "interventions": [],
         "infra_retries": [],
         "contaminated": False,
         "contamination_matches": [],
+        "leakage_audit": {
+            "status": "unknown",
+            "reason": "no attempts have been submitted",
+            "attempts": [],
+        },
+        "event_table": {"definitions_version": 1, "totals": {}, "attempts": []},
         "created_at": utcnow_text(),
         "updated_at": utcnow_text(),
     }
     _atomic_write_text(run_dir / "prompt.txt", prompt)
+    _write_analysis_artifacts(record)
     _write_record(record)
     return _public_record(record)
 
@@ -193,38 +208,143 @@ def submit_manual_attempt(
     usage: dict[str, int] | None = None,
     notes: str = "",
     agent_output: str = "",
+    trace_jsonl: str = "",
+    trace_complete: bool = False,
 ) -> dict[str, Any]:
     record = load_run(run_id, private=True)
     if len(record["attempts"]) >= int(record["max_attempts"]):
         raise ValueError("This run has reached its maximum number of attempts")
+    _verify_input_integrity(record)
     attempt_number = len(record["attempts"]) + 1
+    run_dir = Path(record["private_run_dir"])
+    attempt_dir = run_dir / "attempts" / f"attempt-{attempt_number}"
+    attempt_dir.mkdir(parents=True, exist_ok=True)
+    prompt_used = (
+        (run_dir / "prompt.txt").read_text(encoding="utf-8")
+        if attempt_number == 1
+        else str(record.get("pending_repair_prompt", ""))
+    )
+    previous_cursor = max(
+        (
+            int(previous.get("trace", {}).get("cursor_end", 0))
+            for previous in record.get("attempts", [])
+            if previous.get("session_id") == conversation_id
+        ),
+        default=0,
+    )
+    trace = acquire_codex_trace(
+        conversation_id,
+        trace_jsonl,
+        previous_cursor=previous_cursor,
+        manual_complete=trace_complete,
+    )
+    submitted_usage = _normalize_usage(usage)
+    observed_usage = submitted_usage if submitted_usage["total_tokens"] > 0 else extract_codex_usage(trace["text"])
+    if observed_usage:
+        _record_session_usage(
+            record,
+            conversation_id or f"attempt-{attempt_number}",
+            observed_usage,
+            source="manual_attempt" if submitted_usage["total_tokens"] > 0 else trace["source"],
+        )
+    workspace_before = (
+        record["baseline"]
+        if attempt_number == 1
+        else record["attempts"][-1].get("workspace_after", record["baseline"])
+    )
     evaluation = evaluate_workspace(record, attempt_number)
+    workspace_after = _snapshot_workspace(Path(record["workspace"]))
+    previous_attempt = record["attempts"][-1] if record["attempts"] else None
+    previous_searches = {
+        signature
+        for previous in record["attempts"]
+        for signature in previous.get("event_table", {}).get("search_signatures", [])
+    }
+    event_table = analyze_trace(
+        trace["text"],
+        previous_searches=previous_searches,
+        previous_failed_test_ids=(
+            previous_attempt.get("evaluation", {}).get("hidden", {}).get("failed_test_ids", [])
+            if previous_attempt
+            else []
+        ),
+        previous_changed_files=(
+            previous_attempt.get("evaluation", {}).get("changed_files", [])
+            if previous_attempt
+            else []
+        ),
+        current_hidden_passed=int(evaluation["hidden"]["passed"]),
+        previous_hidden_passed=(
+            int(previous_attempt["evaluation"]["hidden"]["passed"])
+            if previous_attempt
+            else None
+        ),
+    )
+    experiment_dir, manifest = _load_manifest(record["experiment_id"])
+    canonical = _load_canonical(experiment_dir, manifest)
+    canaries = _load_canaries(experiment_dir)
+    leakage_audit = build_leakage_audit(
+        trace_complete=bool(trace["complete"]),
+        omitted_fields=record["omitted_fields"],
+        canonical_handoff=canonical,
+        canaries=canaries,
+        visible_documents={
+            "prompt_used": prompt_used,
+            "tool_trace": trace["text"],
+            "agent_output": agent_output,
+        },
+        trace_reason=trace.get("reason"),
+    )
     attempt = {
         "attempt_number": attempt_number,
         "started_at": utcnow_text(),
         "completed_at": utcnow_text(),
         "session_id": conversation_id,
         "exit_code": None,
-        "usage": _normalize_usage(usage),
-        "feedback_received": None,
+        "usage": submitted_usage,
+        "feedback_received": prompt_used if attempt_number > 1 else None,
         "evaluation": evaluation,
         "code_changed": bool(evaluation["changed_files"]),
         "manual_evaluation": True,
         "notes": notes.strip(),
         "agent_output": agent_output.strip(),
+        "trace": {key: value for key, value in trace.items() if key != "text"},
+        "event_table": event_table,
+        "leakage_audit": leakage_audit,
+        "workspace_before": workspace_before,
+        "workspace_after": workspace_after,
     }
     record["attempts"].append(attempt)
-    _apply_contamination_text(record, agent_output)
+    _write_attempt_artifacts(
+        attempt_dir,
+        prompt_used=prompt_used,
+        trace_text=trace["text"],
+        agent_output=agent_output,
+        workspace_before=workspace_before,
+        workspace_after=workspace_after,
+        evaluation=evaluation,
+        leakage_audit=leakage_audit,
+        event_table=event_table,
+    )
+    record["event_table"] = aggregate_event_tables(record["attempts"])
+    record["leakage_audit"] = _aggregate_leakage_audits(record["attempts"])
+    record["contaminated"] = record["leakage_audit"]["status"] == "failed"
+    record["contamination_matches"] = record["leakage_audit"].get("matches", [])
     if evaluation["resolved"]:
         record["status"] = "resolved"
     elif attempt_number >= int(record["max_attempts"]):
         record["status"] = "failed"
     else:
         record["status"] = "needs_rework"
+    repair_prompt = None if evaluation["resolved"] else _build_feedback(record, attempt)
+    record["pending_repair_prompt"] = repair_prompt
+    if repair_prompt:
+        _atomic_write_text(attempt_dir / "repair_prompt.txt", repair_prompt)
     record["updated_at"] = utcnow_text()
+    _write_analysis_artifacts(record)
     _write_record(record)
     result = _public_record(record)
-    result["repair_prompt"] = None if evaluation["resolved"] else _build_feedback(attempt)
+    result["repair_prompt"] = repair_prompt
     return result
 
 
@@ -257,6 +377,40 @@ def add_intervention(
     return _public_record(record)
 
 
+def update_run_usage(run_id: str, usage: dict[str, int] | None) -> dict[str, Any]:
+    """Store whole-run usage without creating or re-evaluating an attempt."""
+    record = load_run(run_id, private=True)
+    if not record.get("attempts"):
+        raise ValueError("Cannot record usage before the first attempt")
+    normalized = _normalize_usage(usage)
+    if normalized["total_tokens"] <= 0:
+        raise ValueError("Run total_tokens must be greater than zero")
+    record["usage_override"] = {
+        **normalized,
+        "source": "manual_run_total",
+        "updated_at": utcnow_text(),
+    }
+    record["updated_at"] = utcnow_text()
+    _atomic_write_text(
+        Path(record["private_run_dir"]) / "usage.json",
+        json.dumps(record["usage_override"], ensure_ascii=False, indent=2),
+    )
+    _write_record(record)
+    return _public_record(record)
+
+
+def exclude_run_from_analysis(run_id: str, reason: str) -> dict[str, Any]:
+    record = load_run(run_id, private=True)
+    normalized_reason = reason.strip()
+    if not normalized_reason:
+        raise ValueError("Exclusion reason is required")
+    record["excluded_from_analysis"] = True
+    record["exclusion_reason"] = normalized_reason
+    record["updated_at"] = utcnow_text()
+    _write_record(record)
+    return _public_record(record)
+
+
 def load_run(run_id: str, *, private: bool = False) -> dict[str, Any]:
     matches = list(_runs_root().glob(f"*/*/{run_id}/run.json"))
     if len(matches) != 1:
@@ -282,20 +436,31 @@ def summarize_experiment(experiment_id: str) -> dict[str, Any]:
                 "prepared_runs": 0,
                 "attempted_runs": 0,
                 "clean_runs": 0,
+                "leakage_passed_runs": 0,
+                "leakage_failed_runs": 0,
+                "leakage_unknown_runs": 0,
                 "first_attempt_resolved": 0,
                 "final_resolved": 0,
                 "token_total": 0,
                 "rework_count": 0,
                 "interaction_rounds": 0,
+                "excluded_runs": 0,
             },
         )
         arm["runs"] += 1
+        if row.get("excluded_from_analysis"):
+            arm["excluded_runs"] += 1
+            continue
         if not row["attempts"]:
             arm["prepared_runs"] += 1
             continue
         arm["attempted_runs"] += 1
-        if not row["contaminated"]:
+        audit_status = row.get("leakage_audit", {}).get("status", "unknown")
+        arm[f"leakage_{audit_status}_runs"] += 1
+        if audit_status == "passed":
             arm["clean_runs"] += 1
+        else:
+            continue
         arm["first_attempt_resolved"] += int(metrics["first_attempt_resolved"])
         arm["final_resolved"] += int(metrics["final_resolved"])
         arm["token_total"] += metrics["token_total"]
@@ -312,21 +477,36 @@ def evaluate_workspace(record: dict[str, Any], attempt_number: int) -> dict[str,
     evaluation_dir.mkdir(parents=True, exist_ok=True)
 
     changed_files = _changed_files(workspace, record["baseline"])
-    forbidden = {
-        "src/reservation_fixture/allocation/engine.py",
-        "src/reservation_fixture/reservation/service.py",
-        "src/reservation_fixture/api/serializer.py",
-    }
+    forbidden = set(
+        manifest.get(
+            "forbidden_changed_files",
+            [
+                "src/reservation_fixture/allocation/engine.py",
+                "src/reservation_fixture/reservation/service.py",
+                "src/reservation_fixture/api/serializer.py",
+            ],
+        )
+    )
     forbidden_touched = sorted(forbidden.intersection(changed_files))
     env = os.environ.copy()
-    env["PYTHONPATH"] = str(workspace / "src")
+    pythonpath_entries = manifest.get("pythonpath", ["src"])
+    if not isinstance(pythonpath_entries, list) or not pythonpath_entries:
+        raise ValueError("Manifest pythonpath must be a non-empty array")
+    env["PYTHONPATH"] = os.pathsep.join(
+        str((workspace / str(entry)).resolve()) for entry in pythonpath_entries
+    )
     env["HANDOFF_FORBIDDEN_TOUCH"] = ";".join(forbidden_touched)
+    test_python = str(manifest.get("test_python", sys.executable))
+    public_targets = manifest.get("public_test_targets", ["tests"])
+    if not isinstance(public_targets, list) or not public_targets:
+        raise ValueError("Manifest public_test_targets must be a non-empty array")
 
     public = _run_pytest(
         workspace,
-        ["tests"],
+        [str(target) for target in public_targets],
         evaluation_dir / "public.xml",
         env,
+        python_executable=test_python,
     )
     hidden_path = _resolve_private_child(experiment_dir, str(manifest["hidden_tests"]))
     hidden = _run_pytest(
@@ -334,6 +514,7 @@ def evaluate_workspace(record: dict[str, Any], attempt_number: int) -> dict[str,
         [str(hidden_path)],
         evaluation_dir / "hidden.xml",
         env,
+        python_executable=test_python,
     )
     probe_scores = _probe_scores(hidden["cases"])
     return {
@@ -351,8 +532,17 @@ def _run_pytest(
     targets: list[str],
     junit_path: Path,
     env: dict[str, str],
+    *,
+    python_executable: str = sys.executable,
 ) -> dict[str, Any]:
-    command = [sys.executable, "-m", "pytest", "-q", *targets, f"--junitxml={junit_path}"]
+    command = [
+        python_executable,
+        "-m",
+        "pytest",
+        "-q",
+        *targets,
+        f"--junitxml={junit_path}",
+    ]
     completed = subprocess.run(
         command,
         cwd=workspace,
@@ -408,7 +598,7 @@ def _probe_scores(cases: list[dict[str, str]]) -> dict[str, dict[str, int]]:
     return scores
 
 
-def _build_feedback(attempt: dict[str, Any]) -> str:
+def _build_feedback(record: dict[str, Any], attempt: dict[str, Any]) -> str:
     evaluation = attempt["evaluation"]
     failed = evaluation["public"]["failed_test_ids"] + evaluation["hidden"]["failed_test_ids"]
     if not failed:
@@ -416,13 +606,41 @@ def _build_feedback(attempt: dict[str, Any]) -> str:
             "The evaluator could not complete successfully. Inspect the implementation and public "
             "test output, then submit a repaired attempt."
         )
+    _, manifest = _load_manifest(record["experiment_id"])
+    configured_signals = manifest.get("repair_signals", {})
+    repair_signals = configured_signals if isinstance(configured_signals, dict) else {}
+    previous_attempts = record.get("attempts", [])[:-1]
+    repeated = {
+        test_id: 1
+        + sum(
+            test_id
+            in (
+                previous.get("evaluation", {}).get("public", {}).get("failed_test_ids", [])
+                + previous.get("evaluation", {}).get("hidden", {}).get("failed_test_ids", [])
+            )
+            for previous in previous_attempts
+        )
+        for test_id in failed
+    }
     lines = [
         "The private evaluator rejected the previous attempt.",
         "Failed probe identifiers:",
-        *(f"- {test_id}" for test_id in failed),
+        *(
+            f"- {test_id} (consecutive failure {repeated[test_id]})"
+            for test_id in failed
+        ),
+    ]
+    signals = [
+        str(repair_signals[test_id]).strip()
+        for test_id in failed
+        if repair_signals.get(test_id)
+    ]
+    if signals:
+        lines.extend(["Non-secret repair focus:", *(f"- {signal}" for signal in signals)])
+    lines.extend([
         "Repair the implementation using only the handoff already visible to you and the repository source.",
         "Do not search for hidden tests or omitted handoff fields.",
-    ]
+    ])
     return "\n".join(lines)
 
 
@@ -433,6 +651,14 @@ def _render_prompt(
     canaries: dict[str, str],
     workspace: Path,
 ) -> str:
+    workspace_markers = manifest.get(
+        "workspace_markers",
+        ["src/", "tests/", "pyproject.toml"],
+    )
+    if not isinstance(workspace_markers, list) or not workspace_markers:
+        raise ValueError("Manifest workspace_markers must be a non-empty array")
+    marker_text = ", ".join(f"`{marker}`" for marker in workspace_markers)
+    public_test_command = str(manifest.get("public_test_command", "")).strip()
     lines = [
         "You are the successor agent in a controlled handoff ablation experiment.",
         "",
@@ -440,7 +666,7 @@ def _render_prompt(
         "You must work in this exact source workspace:",
         f"`{workspace}`",
         "",
-        "Before reading or editing files, switch to that directory and verify it contains `src/`, `tests/`, and `pyproject.toml`.",
+        f"Before reading or editing files, switch to that directory and verify it contains {marker_text}.",
         "If your current directory is not this exact workspace, change directories first. Do not use the conversation's default working directory.",
         "",
         "## Successor task",
@@ -452,9 +678,16 @@ def _render_prompt(
         "- Do not infer or reconstruct fields omitted from this handoff view.",
         "- Work only inside the supplied source workspace.",
         "- Run the public regression tests available in the workspace before submitting.",
-        "",
-        f"## Handoff view: {arm.arm_id}",
     ]
+    if public_test_command:
+        lines.extend(
+            [
+                "",
+                "## Public verification command",
+                f"`{public_test_command}`",
+            ]
+        )
+    lines.extend(["", f"## Handoff view: {arm.arm_id}"])
     if not arm.include_fields:
         lines.append("No predecessor handoff fields are visible in this run.")
     for field in arm.include_fields:
@@ -526,7 +759,11 @@ def _apply_contamination_text(record: dict[str, Any], text: str) -> None:
 
 def _public_record(record: dict[str, Any]) -> dict[str, Any]:
     attempts = record.get("attempts", [])
-    token_total = sum(int(attempt.get("usage", {}).get("total_tokens", 0)) for attempt in attempts)
+    usage_override = record.get("usage_override", {})
+    override_total = int(usage_override.get("total_tokens", 0) or 0)
+    token_total = override_total or sum(
+        int(attempt.get("usage", {}).get("total_tokens", 0)) for attempt in attempts
+    )
     first_resolved = bool(attempts and attempts[0]["evaluation"]["resolved"])
     final_resolved = record.get("status") == "resolved"
     return {
@@ -539,25 +776,109 @@ def _public_record(record: dict[str, Any]) -> dict[str, Any]:
         "model": record["model"],
         "status": record["status"],
         "workspace": record["workspace"],
-        "attempts": attempts,
+        "max_attempts": int(record.get("max_attempts", 0)),
+        "attempts": [_public_attempt(attempt) for attempt in attempts],
         "contaminated": record.get("contaminated", False),
-        "contamination_matches": record.get("contamination_matches", []),
+        "contamination_matches": len(record.get("contamination_matches", [])),
+        "leakage_audit": _public_leakage_audit(record.get("leakage_audit", {})),
+        "event_table": record.get("event_table", {"totals": {}, "attempts": []}),
+        "input_integrity_verified": bool(record.get("input_integrity")),
+        "repair_prompt": record.get("pending_repair_prompt"),
         "interventions": record.get("interventions", []),
         "infra_retries": record.get("infra_retries", []),
+        "usage_override": usage_override or None,
+        "excluded_from_analysis": bool(record.get("excluded_from_analysis", False)),
+        "exclusion_reason": record.get("exclusion_reason"),
         "metrics": {
             "first_attempt_resolved": first_resolved,
             "final_resolved": final_resolved,
             "interaction_rounds": len(attempts),
             "rework_count": max(0, len(attempts) - 1),
+            "attempt_limit_reached": bool(
+                record.get("status") == "failed"
+                and len(attempts) >= int(record.get("max_attempts", 0))
+            ),
             "human_intervention_count": len(record.get("interventions", [])),
             "human_intervention_minutes": sum(
                 float(event.get("minutes", 0)) for event in record.get("interventions", [])
             ),
             "infra_retry_count": len(record.get("infra_retries", [])),
             "token_total": token_total,
+            "token_observed": bool(override_total > 0 or attempts and all(
+                int(attempt.get("usage", {}).get("total_tokens", 0)) > 0 for attempt in attempts
+            )),
+            "eligible_for_analysis": bool(
+                not record.get("excluded_from_analysis", False)
+                and record.get("leakage_audit", {}).get("status") == "passed"
+            ),
         },
         "created_at": record["created_at"],
         "updated_at": record["updated_at"],
+    }
+
+
+def _public_attempt(attempt: dict[str, Any]) -> dict[str, Any]:
+    """Remove hidden evaluator internals before returning a run through the API."""
+    evaluation = attempt.get("evaluation", {})
+    public = evaluation.get("public", {})
+    hidden = evaluation.get("hidden", {})
+    return {
+        **{
+            key: value
+            for key, value in attempt.items()
+            if key not in {"evaluation", "workspace_before", "workspace_after", "leakage_audit", "trace"}
+        },
+        "trace": {
+            key: value
+            for key, value in attempt.get("trace", {}).items()
+            if key != "source_path"
+        },
+        "leakage_audit": _public_leakage_audit(attempt.get("leakage_audit", {})),
+        "evaluation": {
+            "resolved": bool(evaluation.get("resolved", False)),
+            "public": {
+                "passed": int(public.get("passed", 0)),
+                "failed": int(public.get("failed", 0)),
+                "total": int(public.get("total", 0)),
+                "failed_test_ids": list(public.get("failed_test_ids", [])),
+            },
+            "hidden": {
+                "passed": int(hidden.get("passed", 0)),
+                "failed": int(hidden.get("failed", 0)),
+                "total": int(hidden.get("total", 0)),
+                "failed_test_ids": list(hidden.get("failed_test_ids", [])),
+            },
+            "probe_scores": evaluation.get("probe_scores", {}),
+            "changed_files": list(evaluation.get("changed_files", [])),
+            "forbidden_files_touched": list(evaluation.get("forbidden_files_touched", [])),
+        },
+    }
+
+
+def _public_leakage_audit(audit: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "status": audit.get("status", "unknown"),
+        "trace_complete": bool(audit.get("trace_complete", False)),
+        "trace_reason": audit.get("trace_reason", audit.get("reason")),
+        "omitted_fields": list(audit.get("omitted_fields", [])),
+        "match_count": int(audit.get("match_count", len(audit.get("matches", [])))),
+        "matches": [
+            {
+                "field": item.get("field"),
+                "source": item.get("source"),
+                "kind": item.get("kind"),
+            }
+            for item in audit.get("matches", [])
+        ],
+        "attempts": [
+            {
+                "attempt_number": item.get("attempt_number"),
+                "status": item.get("status", "unknown"),
+                "trace_complete": bool(item.get("trace_complete", False)),
+                "match_count": int(item.get("match_count", 0)),
+            }
+            for item in audit.get("attempts", [])
+        ],
     }
 
 
@@ -576,6 +897,106 @@ def _changed_files(workspace: Path, baseline: dict[str, str]) -> list[str]:
 
 def _ignored_workspace_path(path: Path) -> bool:
     return any(part in {".git", ".pytest_cache", "__pycache__", ".venv"} for part in path.parts) or path.suffix == ".pyc"
+
+
+def _input_integrity(
+    experiment_dir: Path,
+    manifest: dict[str, Any],
+    fixture_repo: Path,
+) -> dict[str, str]:
+    canonical_path = _resolve_private_child(experiment_dir, str(manifest["canonical_handoff"]))
+    hidden_path = _resolve_private_child(experiment_dir, str(manifest["hidden_tests"]))
+    canaries_path = experiment_dir / "canaries.json"
+    return {
+        "manifest_sha256": _sha256_bytes((experiment_dir / "manifest.json").read_bytes()),
+        "canonical_handoff_sha256": _sha256_bytes(canonical_path.read_bytes()),
+        "canaries_sha256": _sha256_bytes(canaries_path.read_bytes()) if canaries_path.exists() else "",
+        "hidden_tests_sha256": _snapshot_digest(_snapshot_workspace(hidden_path)),
+        "fixture_sha256": _snapshot_digest(_snapshot_workspace(fixture_repo)),
+    }
+
+
+def _verify_input_integrity(record: dict[str, Any]) -> None:
+    expected = record.get("input_integrity")
+    if not expected:
+        return
+    experiment_dir, manifest = _load_manifest(record["experiment_id"])
+    fixture_repo = Path(str(manifest["fixture_repo"])).expanduser().resolve()
+    actual = _input_integrity(experiment_dir, manifest, fixture_repo)
+    if actual != expected:
+        changed = sorted(key for key in set(actual) | set(expected) if actual.get(key) != expected.get(key))
+        raise ValueError(f"Frozen experiment inputs changed after run preparation: {', '.join(changed)}")
+
+
+def _snapshot_digest(snapshot: dict[str, str]) -> str:
+    return _sha256_text(json.dumps(snapshot, sort_keys=True, separators=(",", ":")))
+
+
+def _aggregate_leakage_audits(attempts: list[dict[str, Any]]) -> dict[str, Any]:
+    rows = []
+    all_matches: list[dict[str, Any]] = []
+    for attempt in attempts:
+        audit = attempt.get("leakage_audit", {})
+        rows.append(
+            {
+                "attempt_number": attempt.get("attempt_number"),
+                "status": audit.get("status", "unknown"),
+                "trace_complete": bool(audit.get("trace_complete", False)),
+                "match_count": int(audit.get("match_count", 0)),
+            }
+        )
+        all_matches.extend(audit.get("matches", []))
+    statuses = {row["status"] for row in rows}
+    status = "failed" if "failed" in statuses else "passed" if rows and statuses == {"passed"} else "unknown"
+    return {
+        "audit_version": 1,
+        "status": status,
+        "attempts": rows,
+        "match_count": len(all_matches),
+        "matches": all_matches,
+    }
+
+
+def _write_attempt_artifacts(
+    attempt_dir: Path,
+    *,
+    prompt_used: str,
+    trace_text: str,
+    agent_output: str,
+    workspace_before: dict[str, str],
+    workspace_after: dict[str, str],
+    evaluation: dict[str, Any],
+    leakage_audit: dict[str, Any],
+    event_table: dict[str, Any],
+) -> None:
+    artifacts = {
+        "prompt_used.txt": prompt_used,
+        "tool_trace.jsonl": trace_text,
+        "agent_output.txt": agent_output,
+        "workspace_before.json": json.dumps(workspace_before, ensure_ascii=False, indent=2),
+        "workspace_after.json": json.dumps(workspace_after, ensure_ascii=False, indent=2),
+        "evaluation.json": json.dumps(evaluation, ensure_ascii=False, indent=2),
+        "leakage_audit.json": json.dumps(leakage_audit, ensure_ascii=False, indent=2),
+        "event_table.json": json.dumps(event_table, ensure_ascii=False, indent=2),
+    }
+    for name, content in artifacts.items():
+        _atomic_write_text(attempt_dir / name, content)
+
+
+def _write_analysis_artifacts(record: dict[str, Any]) -> None:
+    run_dir = Path(record["private_run_dir"])
+    _atomic_write_text(
+        run_dir / "leakage_audit.json",
+        json.dumps(record["leakage_audit"], ensure_ascii=False, indent=2),
+    )
+    _atomic_write_text(
+        run_dir / "event_table.json",
+        json.dumps(record["event_table"], ensure_ascii=False, indent=2),
+    )
+    _atomic_write_text(
+        run_dir / "input_integrity.json",
+        json.dumps(record.get("input_integrity", {}), ensure_ascii=False, indent=2),
+    )
 
 
 def _empty_usage() -> dict[str, int]:
@@ -600,6 +1021,33 @@ def _normalize_usage(usage: dict[str, int] | None) -> dict[str, int]:
     if not normalized["total_tokens"]:
         normalized["total_tokens"] = normalized["input_tokens"] + normalized["output_tokens"]
     return normalized
+
+
+def _record_session_usage(
+    record: dict[str, Any],
+    session_id: str,
+    usage: dict[str, int],
+    *,
+    source: str,
+) -> None:
+    normalized = _normalize_usage(usage)
+    if normalized["total_tokens"] <= 0:
+        return
+    by_session = record.setdefault("usage_by_session", {})
+    by_session[session_id] = normalized
+    combined = {
+        key: sum(int(item.get(key, 0) or 0) for item in by_session.values())
+        for key in _empty_usage()
+    }
+    record["usage_override"] = {
+        **combined,
+        "source": source,
+        "updated_at": utcnow_text(),
+    }
+    _atomic_write_text(
+        Path(record["private_run_dir"]) / "usage.json",
+        json.dumps(record["usage_override"], ensure_ascii=False, indent=2),
+    )
 
 
 def _get_arm(arm_id: str) -> SecureArm:

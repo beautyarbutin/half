@@ -1,0 +1,9 @@
+﻿order,replicate,arm_id,run_id,leakage_status,leakage_match_count,trace_complete,input_integrity_verified,eligible
+1,1,D_no_verification,20260716T082827Z-2f2748ba,passed,0,1,1,1
+2,1,H_no_handoff,20260716T091130Z-0af8cc95,passed,0,1,1,1
+3,1,A_full,20260716T094007Z-b81199f1,passed,0,1,1,1
+4,2,E_no_unfinished_items,20260716T094802Z-debd284b,passed,0,1,1,1
+5,2,A_full,20260716T100731Z-90211800,passed,0,1,1,1
+6,1,E_no_unfinished_items,20260716T101802Z-a4969c2a,passed,0,1,1,1
+7,2,H_no_handoff,20260716T103416Z-e2dc5931,passed,0,1,1,1
+8,2,D_no_verification,20260716T105407Z-3c06d70e,passed,0,1,1,1

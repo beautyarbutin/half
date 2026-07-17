@@ -1,0 +1,5 @@
+﻿arm_id,mean_file_read_events,mean_unique_files_read,mean_search_events,mean_repeated_search_events,mean_test_runs,mean_edit_events,mean_interface_guess_events,mean_ineffective_edit_attempts,mean_rollback_events,mean_pre_edit_discovery_events
+A_full,21,20,1.5,0,2,3,0,0,0,20.5
+D_no_verification,29,23,5,0,4.5,7.5,4,0.5,0,28.5
+E_no_unfinished_items,32,24.5,3.5,0,4.5,9,4,2,0,34
+H_no_handoff,37,27,5.5,0,9.5,7,5,1.5,0,34.5

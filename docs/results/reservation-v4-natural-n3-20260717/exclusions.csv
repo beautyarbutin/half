@@ -1,0 +1,2 @@
+﻿run_id,arm_id,status,reason,record_marked_excluded,preserved_evidence_path
+20260717T063529Z-f2105644,A_full,needs_rework,Protocol violation: the agent edited workspace 20260717T040138Z-11223fcf instead of the assigned 20260717T063529Z-f2105644 workspace; the evaluated workspace received no code changes.,1,D:\code\workspace\half-experiment-runs\reservation-v4-natural\A_full\20260717T063529Z-f2105644

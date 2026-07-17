@@ -1,0 +1,33 @@
+{
+  "experiment_id": "reservation-v3",
+  "cohort_id": "reservation-v3-calibration-20260716",
+  "purpose": "pipeline_calibration",
+  "created_on": "2026-07-16",
+  "randomization": {
+    "method": "PowerShell Get-Random",
+    "seed": 20260724
+  },
+  "fixed_conditions": {
+    "model": "gpt-5.5",
+    "reasoning_effort": "xhigh",
+    "max_attempts": 3,
+    "new_conversation_per_run": true,
+    "leakage_gate": "passed"
+  },
+  "runs": [
+    {"order": 1, "replicate": 1, "arm_id": "D_no_verification", "run_id": "20260716T082827Z-2f2748ba", "status": "completed"},
+    {"order": 2, "replicate": 1, "arm_id": "H_no_handoff", "run_id": "20260716T091130Z-0af8cc95", "status": "completed"},
+    {"order": 3, "replicate": 1, "arm_id": "A_full", "run_id": "20260716T094007Z-b81199f1", "status": "completed"},
+    {"order": 4, "replicate": 2, "arm_id": "E_no_unfinished_items", "run_id": "20260716T094802Z-debd284b", "status": "completed"},
+    {"order": 5, "replicate": 2, "arm_id": "A_full", "run_id": "20260716T100731Z-90211800", "status": "completed"},
+    {"order": 6, "replicate": 1, "arm_id": "E_no_unfinished_items", "run_id": "20260716T101802Z-a4969c2a", "status": "completed"},
+    {"order": 7, "replicate": 2, "arm_id": "H_no_handoff", "run_id": "20260716T103416Z-e2dc5931", "status": "completed"},
+    {"order": 8, "replicate": 2, "arm_id": "D_no_verification", "run_id": "20260716T105407Z-3c06d70e", "status": "completed"}
+  ],
+  "excluded_runs": [
+    {
+      "run_id": "20260717T010631Z-f5980477",
+      "reason": "operator_duplicate: created only to backfill usage; no agent work occurred in this workspace"
+    }
+  ]
+}

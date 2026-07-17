@@ -1,0 +1,5 @@
+﻿arm_id,mean_file_read_events,mean_unique_files_read,mean_search_events,mean_repeated_search_events,mean_test_runs,mean_edit_events,mean_interface_guess_events,mean_ineffective_edit_attempts,mean_rollback_events,mean_pre_edit_discovery_events
+A_full,17,17.333333333333332,2,0,2.6666666666666665,2.3333333333333335,0,0,0,16.666666666666668
+D_no_verification,20.333333333333332,20.666666666666668,2,0,2.3333333333333335,2.3333333333333335,0,0,0,21
+E_no_unfinished_items,19,19,2.6666666666666665,0,2,1.6666666666666667,0,0,0,20.666666666666668
+H_no_handoff,28.666666666666668,26.333333333333332,3,0.3333333333333333,2,2,0,0,0,27.666666666666668

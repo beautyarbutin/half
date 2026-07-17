@@ -3245,6 +3245,9 @@ body,
 
 .handoff-wide-field { margin: 16px 0; }
 .handoff-wide-field textarea { min-height: 120px; }
+.handoff-attempt-actions { display: flex; flex-wrap: wrap; gap: 12px; }
+.handoff-token-fallback { margin-top: 16px; }
+.handoff-token-fallback summary { cursor: pointer; color: var(--text-secondary, #667085); }
 
 .handoff-metrics-row {
   display: grid;

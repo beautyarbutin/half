@@ -1,0 +1,77 @@
+{
+  "experiment_id": "sqlite-utils-list-iterator-v1",
+  "schema_version": 1,
+  "model": "gpt-5.5",
+  "fresh_conversation_per_run": true,
+  "max_attempts": 3,
+  "pilot_order": [
+    "A_full",
+    "D_no_verification",
+    "E_no_unfinished_items",
+    "H_no_handoff"
+  ],
+  "full_repetitions": [
+    [
+      "F_no_risks",
+      "B_no_goal",
+      "A_full",
+      "G_no_next_steps",
+      "D_no_verification",
+      "C_no_changed_files",
+      "H_no_handoff",
+      "E_no_unfinished_items"
+    ],
+    [
+      "C_no_changed_files",
+      "E_no_unfinished_items",
+      "G_no_next_steps",
+      "A_full",
+      "H_no_handoff",
+      "F_no_risks",
+      "B_no_goal",
+      "D_no_verification"
+    ],
+    [
+      "D_no_verification",
+      "H_no_handoff",
+      "B_no_goal",
+      "F_no_risks",
+      "E_no_unfinished_items",
+      "A_full",
+      "C_no_changed_files",
+      "G_no_next_steps"
+    ]
+  ],
+  "analysis_gate": {
+    "trace_complete": true,
+    "leakage_audit": "passed",
+    "omitted_field_hits": 0
+  },
+  "primary_comparisons": [
+    {
+      "arms": [
+        "A_full",
+        "E_no_unfinished_items"
+      ],
+      "outcomes": [
+        "first_attempt_hidden_accuracy",
+        "final_hidden_accuracy",
+        "final_resolved",
+        "rework_count"
+      ]
+    },
+    {
+      "arms": [
+        "A_full",
+        "D_no_verification"
+      ],
+      "outcomes": [
+        "token_total",
+        "test_runs",
+        "edit_events",
+        "first_attempt_resolved",
+        "rework_count"
+      ]
+    }
+  ]
+}
