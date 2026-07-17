@@ -209,6 +209,7 @@ class SecureHandoffExperimentTests(unittest.TestCase):
                     "public": {
                         "passed": 1,
                         "failed": 0,
+                        "skipped": 2,
                         "total": 1,
                         "failed_test_ids": [],
                         "cases": [{"name": "public_case"}],
@@ -217,6 +218,7 @@ class SecureHandoffExperimentTests(unittest.TestCase):
                     "hidden": {
                         "passed": 0,
                         "failed": 1,
+                        "skipped": 0,
                         "total": 1,
                         "failed_test_ids": ["test_unfinished_01_publishes_audit"],
                         "cases": [{"name": "secret_case"}],
@@ -242,6 +244,7 @@ class SecureHandoffExperimentTests(unittest.TestCase):
             public_evaluation["hidden"]["failed_test_ids"],
             ["test_unfinished_01_publishes_audit"],
         )
+        self.assertEqual(public_evaluation["public"]["skipped"], 2)
 
     def test_feedback_adds_non_secret_focus_and_repeat_count(self):
         run = prepare_run("sample", "A_full")

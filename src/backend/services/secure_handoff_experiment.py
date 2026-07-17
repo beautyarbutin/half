@@ -566,6 +566,7 @@ def _run_pytest(
         "exit_code": completed.returncode,
         "passed": sum(case["status"] == "passed" for case in cases),
         "failed": sum(case["status"] == "failed" for case in cases),
+        "skipped": sum(case["status"] == "skipped" for case in cases),
         "total": len(cases),
         "failed_test_ids": [case["name"] for case in cases if case["status"] == "failed"],
         "cases": cases,
@@ -846,12 +847,14 @@ def _public_attempt(attempt: dict[str, Any]) -> dict[str, Any]:
             "public": {
                 "passed": int(public.get("passed", 0)),
                 "failed": int(public.get("failed", 0)),
+                "skipped": int(public.get("skipped", 0)),
                 "total": int(public.get("total", 0)),
                 "failed_test_ids": list(public.get("failed_test_ids", [])),
             },
             "hidden": {
                 "passed": int(hidden.get("passed", 0)),
                 "failed": int(hidden.get("failed", 0)),
+                "skipped": int(hidden.get("skipped", 0)),
                 "total": int(hidden.get("total", 0)),
                 "failed_test_ids": list(hidden.get("failed_test_ids", [])),
             },

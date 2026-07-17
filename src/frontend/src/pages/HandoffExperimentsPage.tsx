@@ -5,8 +5,8 @@ interface Experiment { experiment_id: string; max_attempts: number; feedback_mod
 interface Arm { arm_id: string; label: string; include_fields: string[]; omitted_fields: string[] }
 interface EvaluationSummary {
   resolved: boolean;
-  public: { passed: number; total: number };
-  hidden: { passed: number; total: number; failed_test_ids: string[] };
+  public: { passed: number; failed: number; skipped: number; total: number };
+  hidden: { passed: number; failed: number; skipped: number; total: number; failed_test_ids: string[] };
   changed_files: string[];
 }
 interface LeakageAudit {
@@ -282,7 +282,24 @@ export default function HandoffExperimentsPage() {
               <div><strong>{run.metrics.human_intervention_count}</strong><span>人工干预</span></div>
             </div>
             {run.metrics.attempt_limit_reached && <div className="error-message">本次运行已达到最大尝试次数；返工次数是上限截断值。</div>}
-            {latestAttempt && <div className="handoff-evaluation"><p>公开测试：{latestAttempt.evaluation.public.passed}/{latestAttempt.evaluation.public.total}</p><p>隐藏测试：{latestAttempt.evaluation.hidden.passed}/{latestAttempt.evaluation.hidden.total}</p><p>变更文件：{latestAttempt.evaluation.changed_files.join(', ') || '无'}</p>{latestAttempt.evaluation.hidden.failed_test_ids.length > 0 && <p>失败探针：{latestAttempt.evaluation.hidden.failed_test_ids.join(', ')}</p>}</div>}
+            {latestAttempt && (
+              <div className="handoff-evaluation">
+                <p>
+                  公开测试：{latestAttempt.evaluation.public.passed} 通过，
+                  {latestAttempt.evaluation.public.failed} 失败，
+                  {latestAttempt.evaluation.public.skipped} 跳过
+                </p>
+                <p>
+                  隐藏测试：{latestAttempt.evaluation.hidden.passed} 通过，
+                  {latestAttempt.evaluation.hidden.failed} 失败，
+                  {latestAttempt.evaluation.hidden.skipped} 跳过
+                </p>
+                <p>变更文件：{latestAttempt.evaluation.changed_files.join(', ') || '无'}</p>
+                {latestAttempt.evaluation.hidden.failed_test_ids.length > 0 && (
+                  <p>失败探针：{latestAttempt.evaluation.hidden.failed_test_ids.join(', ')}</p>
+                )}
+              </div>
+            )}
             <div className="handoff-evaluation">
               <p><strong>泄漏审计：{run.leakage_audit.status}</strong></p>
               <p>本轮 Trace：{latestAttempt?.trace.complete ? '完整' : '不完整'}{latestAttempt?.trace.reason ? `（${latestAttempt.trace.reason}）` : ''}</p>
