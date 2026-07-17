@@ -359,7 +359,7 @@ class SecureHandoffExperimentTests(unittest.TestCase):
             "services.secure_handoff_experiment.evaluate_workspace",
             return_value=evaluation,
         ) as evaluator:
-            submit_manual_attempt(run["run_id"])
+            submit_manual_attempt(run["run_id"], agent_output="Completed.")
             result = update_run_usage(run["run_id"], {"total_tokens": 456})
 
         self.assertEqual(evaluator.call_count, 1)
@@ -379,13 +379,19 @@ class SecureHandoffExperimentTests(unittest.TestCase):
             "forbidden_files_touched": [],
         }
         with patch("services.secure_handoff_experiment.evaluate_workspace", return_value=evaluation):
-            submit_manual_attempt(run["run_id"])
+            submit_manual_attempt(run["run_id"], agent_output="Completed.")
         excluded = exclude_run_from_analysis(run["run_id"], "operator created duplicate")
         summary = summarize_experiment("sample")
 
         self.assertFalse(excluded["metrics"]["eligible_for_analysis"])
         self.assertEqual(summary["by_arm"]["A_full"]["excluded_runs"], 1)
         self.assertEqual(summary["by_arm"]["A_full"]["attempted_runs"], 0)
+
+    def test_submit_attempt_requires_agent_output(self):
+        run = prepare_run("sample", "A_full")
+
+        with self.assertRaisesRegex(ValueError, "Agent final output is required"):
+            submit_manual_attempt(run["run_id"], agent_output="   ")
 
 
 if __name__ == "__main__":

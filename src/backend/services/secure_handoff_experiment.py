@@ -219,6 +219,9 @@ def submit_manual_attempt(
     trace_complete: bool = False,
 ) -> dict[str, Any]:
     record = load_run(run_id, private=True)
+    normalized_agent_output = agent_output.strip()
+    if not normalized_agent_output:
+        raise ValueError("Agent final output is required before submitting an attempt")
     if len(record["attempts"]) >= int(record["max_attempts"]):
         raise ValueError("This run has reached its maximum number of attempts")
     _verify_input_integrity(record)
@@ -314,7 +317,7 @@ def submit_manual_attempt(
         "code_changed": bool(evaluation["changed_files"]),
         "manual_evaluation": True,
         "notes": notes.strip(),
-        "agent_output": agent_output.strip(),
+        "agent_output": normalized_agent_output,
         "trace": {key: value for key, value in trace.items() if key != "text"},
         "event_table": event_table,
         "leakage_audit": leakage_audit,

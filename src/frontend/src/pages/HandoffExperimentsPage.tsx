@@ -114,6 +114,23 @@ export default function HandoffExperimentsPage() {
       .catch((err) => setError(extractApiErrorDetail(String(err)) || String(err)));
   }, []);
 
+  React.useEffect(() => {
+    const requestedRunId = new URLSearchParams(window.location.search).get('run_id');
+    if (!requestedRunId) return;
+    Promise.all([
+      api.get<ExperimentRun>(`/api/handoff-experiments/runs/${requestedRunId}`),
+      api.get<RunPrompt>(`/api/handoff-experiments/runs/${requestedRunId}/prompt`),
+    ])
+      .then(([loadedRun, loadedPrompt]) => {
+        setRun(loadedRun);
+        setRunPrompt(loadedPrompt);
+        setConversationId(
+          loadedRun.attempts[loadedRun.attempts.length - 1]?.session_id || '',
+        );
+      })
+      .catch((err) => setError(extractApiErrorDetail(String(err)) || String(err)));
+  }, []);
+
   async function loadPrompt(nextRun: ExperimentRun) {
     setRunPrompt(await api.get<RunPrompt>(`/api/handoff-experiments/runs/${nextRun.run_id}/prompt`));
   }
@@ -128,6 +145,11 @@ export default function HandoffExperimentsPage() {
         { arm_id: armId, model, max_attempts: 3 },
       );
       setRun(nextRun);
+      window.history.replaceState(
+        null,
+        '',
+        `/handoff-experiments?run_id=${encodeURIComponent(nextRun.run_id)}`,
+      );
       setConversationId('');
       setTokens(EMPTY_TOKENS);
       setAgentOutput('');
@@ -262,7 +284,7 @@ export default function HandoffExperimentsPage() {
             {traceJsonl.trim() && <label><input type="checkbox" checked={traceComplete} onChange={(event) => setTraceComplete(event.target.checked)} /> 手工 Trace 已覆盖本轮全部可见输入与工具调用</label>}
             <label className="handoff-wide-field">备注<input value={notes} onChange={(event) => setNotes(event.target.value)} /></label>
             <div className="handoff-attempt-actions">
-              <button className="btn btn-primary" onClick={submitAttempt} disabled={busy || run.status === 'resolved' || run.status === 'failed'}>运行隐藏评测并提交</button>
+              <button className="btn btn-primary" onClick={submitAttempt} disabled={busy || !agentOutput.trim() || run.status === 'resolved' || run.status === 'failed'}>运行隐藏评测并提交</button>
             </div>
             <details className="handoff-token-fallback">
               <summary>自动采集失败时手动补录 Token</summary>
