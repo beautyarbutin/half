@@ -14,6 +14,7 @@ from services.secure_handoff_experiment import (
     SCHEMA_FIELDS,
     _build_feedback,
     _public_record,
+    _snapshot_workspace,
     exclude_run_from_analysis,
     evaluate_workspace,
     prepare_run,
@@ -87,6 +88,10 @@ class SecureHandoffExperimentTests(unittest.TestCase):
         self.assertEqual(arms["H_no_handoff"]["include_fields"], [])
 
     def test_prepare_run_materializes_only_filtered_prompt(self):
+        generated_cache = self.fixture / ".hypothesis" / "constants"
+        generated_cache.mkdir(parents=True)
+        (generated_cache / "example").write_text("generated\n", encoding="utf-8")
+
         run = prepare_run("sample", "F_no_risks", model="test-model")
         workspace = Path(run["workspace"])
         run_dir = workspace.parent
@@ -94,6 +99,7 @@ class SecureHandoffExperimentTests(unittest.TestCase):
 
         self.assertTrue((workspace / "example.py").is_file())
         self.assertFalse((workspace / ".git").exists())
+        self.assertFalse((workspace / ".hypothesis").exists())
         self.assertIn(str(workspace), prompt)
         self.assertIn("Before reading or editing files, switch to that directory", prompt)
         self.assertIn("Finish the adapter", prompt)
@@ -102,6 +108,11 @@ class SecureHandoffExperimentTests(unittest.TestCase):
         self.assertNotIn("canonical_handoff", prompt)
         self.assertTrue((run_dir / "input_integrity.json").is_file())
         self.assertEqual(run["leakage_audit"]["status"], "unknown")
+
+        runtime_cache = workspace / ".hypothesis" / "constants"
+        runtime_cache.mkdir(parents=True)
+        (runtime_cache / "runtime").write_text("generated\n", encoding="utf-8")
+        self.assertNotIn(".hypothesis/constants/runtime", _snapshot_workspace(workspace))
 
     def test_prepare_run_supports_manifest_workspace_layout_and_test_command(self):
         manifest_path = self.experiment / "manifest.json"

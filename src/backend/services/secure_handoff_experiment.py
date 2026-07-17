@@ -153,7 +153,14 @@ def prepare_run(
     shutil.copytree(
         fixture_repo,
         workspace,
-        ignore=shutil.ignore_patterns(".git", ".venv", ".pytest_cache", "__pycache__", "*.pyc"),
+        ignore=shutil.ignore_patterns(
+            ".git",
+            ".venv",
+            ".pytest_cache",
+            ".hypothesis",
+            "__pycache__",
+            "*.pyc",
+        ),
     )
 
     baseline = _snapshot_workspace(workspace)
@@ -896,7 +903,16 @@ def _changed_files(workspace: Path, baseline: dict[str, str]) -> list[str]:
 
 
 def _ignored_workspace_path(path: Path) -> bool:
-    return any(part in {".git", ".pytest_cache", "__pycache__", ".venv"} for part in path.parts) or path.suffix == ".pyc"
+    ignored_directories = {
+        ".git",
+        ".hypothesis",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".ruff_cache",
+        ".venv",
+        "__pycache__",
+    }
+    return any(part in ignored_directories for part in path.parts) or path.suffix == ".pyc"
 
 
 def _input_integrity(
